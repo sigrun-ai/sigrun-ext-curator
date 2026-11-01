@@ -77,6 +77,15 @@ export interface DigestQueueEntry {
     readonly id: ConversationId;
     readonly hints: readonly CurationHint[];
 }
+/** Read the digest queue's entries for one user; absent/malformed → []. */
+export declare function readDigestQueue(host: SigrunHost, user: string): Promise<readonly DigestQueueEntry[]>;
+/** Overwrite the digest queue's entries (the digest step's write-back). */
+export declare function writeDigestQueue(host: SigrunHost, user: string, conversations: readonly DigestQueueEntry[]): Promise<void>;
+/**
+ * Remove one conversation's digest entry (the digest step, after the
+ * review completed and took ownership of its hints). Idempotent.
+ */
+export declare function removeDigestEntry(host: SigrunHost, user: string, conversationId: ConversationId): Promise<void>;
 /**
  * Queue one conversation for loop 2's digest (Task B4 consumes): append
  * to `digest-queue.json` under the user's state dir, dedup by id, the

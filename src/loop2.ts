@@ -38,7 +38,12 @@ import type { SigrunHost } from "@sigrun/sigrun/extension";
 import { readStateJson, writeStateJson } from "./queue.js";
 import { readSettings } from "./settings.js";
 import { archiveUnused } from "./steps/archive.js";
-import { detectOverlayDrift } from "./steps/overlays.js";
+import { detectOverlayDrift, recheckOverlays } from "./steps/overlays.js";
+import { digestsStep } from "./steps/digests.js";
+import { dietStep } from "./steps/diet.js";
+import { mergeStep } from "./steps/merge.js";
+import { maintainTargets } from "./steps/targets.js";
+import type { ModelStepDeps, RunBudget } from "./steps/run.js";
 
 /**
  * The idle threshold (spec §5 pins SIGRUN_IDLE_THRESHOLD's default at
@@ -82,7 +87,7 @@ export const PASS_STEPS = [
 /** A pass step's kind (the cursor's queue entries). */
 export type StepId = (typeof PASS_STEPS)[number];
 
-/** The step-queue kinds Task B4 owns (no-ops until it lands). */
+/** The step-queue kinds Task B4 owns (the five model steps). */
 const MODEL_STEPS: ReadonlySet<StepId> = new Set([
 	"overlay-recheck",
 	"digests",
@@ -301,24 +306,37 @@ export async function tick(
 	}
 }
 
-/** Run one step of a user's pass (the table B3 fills deterministically). */
-type StepRunner = (
+/** Run one step of a user's pass: deterministic steps take `(host,
+ *  user, now)`; model steps take the full {@link ModelStepDeps} (the
+ *  budget and the tick deadline included) and answer whether the pass
+ *  may CONTINUE past them (false = out of daily budget — the pass
+ *  stops for the day, the cursor stays put). */
+type DeterministicRunner = (
 	host: SigrunHost,
 	user: string,
 	now: () => Date,
 ) => Promise<void>;
+type ModelRunner = (deps: ModelStepDeps) => Promise<boolean>;
 
-/** The deterministic step bodies; model steps are Task B4's no-ops. */
-const STEP_RUNNERS: Readonly<Partial<Record<StepId, StepRunner>>> = {
+/** The step table: B3's deterministic steps and B4's model steps. */
+const STEP_RUNNERS: Readonly<
+	Record<StepId, DeterministicRunner | ModelRunner>
+> = {
 	archive: archiveUnused,
 	"overlay-detect": detectOverlayDrift,
+	"overlay-recheck": recheckOverlays,
+	digests: digestsStep,
+	diet: dietStep,
+	merge: mergeStep,
+	targets: maintainTargets,
 };
 
 /**
  * Walk one user's pass from its cursor: run steps while the tick's
- * deadline holds, persisting `done` after every step. The five model
- * steps complete as no-ops here (Task B4 gives them bodies — the
- * cursor already traverses them, so B4 needs no migration).
+ * deadline holds, persisting `done` after every step. A MODEL step that
+ * answers false (the daily budget is spent) STOPS the pass for the day:
+ * the cursor keeps pointing at that step, and the next tick — or the
+ * next day's re-armed budget — resumes exactly there.
  */
 async function runPass(
 	host: SigrunHost,
@@ -328,47 +346,85 @@ async function runPass(
 	log: (message: string) => void,
 ): Promise<void> {
 	const today = dayOf(now());
-	let cursor = await readPass(host, user);
-	if (cursor === undefined || cursor.done >= cursor.steps.length) {
+	const read = await readPass(host, user);
+	let fresh: PassFile;
+	if (read === undefined || read.done >= read.steps.length) {
 		// No pass yet, or the previous pass completed (its 24h window is
 		// why the user is eligible again): a fresh cursor from step one.
-		cursor = {
+		fresh = {
 			startedAt: now().toISOString(),
 			steps: [...PASS_STEPS],
 			done: 0,
 			dailyRunsUsed: 0,
 			day: today,
 		};
-		await writePass(host, user, cursor);
-	} else if (cursor.day !== today) {
+	} else if (read.day !== today) {
 		// A new day re-arms the model-run budget mid-pass.
-		cursor = { ...cursor, day: today, dailyRunsUsed: 0 };
-		await writePass(host, user, cursor);
+		fresh = { ...read, day: today, dailyRunsUsed: 0 };
+	} else {
+		fresh = read;
 	}
+	// The cursor holder — one mutable slot every writer goes through, so
+	// the budget closure always sees the live cursor.
+	const state: { cursor: PassFile } = { cursor: fresh };
+	await writePass(host, user, state.cursor);
 
-	while (cursor.done < cursor.steps.length) {
+	// The daily model-run budget (Task B4): `dailyRuns` minus what today
+	// already spent. Every spend persists the cursor BEFORE its run —
+	// a crash may waste a run, it never overspends the day.
+	const settings = await readSettings(host, user);
+	const budget: RunBudget = {
+		left: () => Math.max(0, settings.dailyRuns - state.cursor.dailyRunsUsed),
+		spend: async () => {
+			if (state.cursor.dailyRunsUsed >= settings.dailyRuns) return false;
+			state.cursor = {
+				...state.cursor,
+				dailyRunsUsed: state.cursor.dailyRunsUsed + 1,
+			};
+			await writePass(host, user, state.cursor);
+			return true;
+		},
+	};
+
+	while (state.cursor.done < state.cursor.steps.length) {
+		const cursor = state.cursor;
 		// Out of tick budget: stop BEFORE the next step — the cursor is
 		// the resume point the next tick picks up.
 		if (now().getTime() >= deadlineAt) return;
 		const step = cursor.steps[cursor.done];
 		const runner = STEP_RUNNERS[step];
-		if (runner !== undefined) {
-			try {
-				await runner(host, user, now);
-			} catch (error) {
-				// The step failed; the pass moves on — a deterministic step
-				// wedging the cursor forever would be worse than skipping it
-				// this pass (idempotent steps make a later pass safe).
-				log(
+		const deps: ModelStepDeps = {
+			host,
+			user,
+			now,
+			deadlineAt,
+			budget,
+			log,
+		};
+		try {
+			if (MODEL_STEPS.has(step)) {
+				const proceed = await (runner as ModelRunner)(deps);
+				if (!proceed) {
+					// The daily cap (or the tick deadline) stopped the pass: the
+				// cursor stays at this step — the next tick resumes it, and a
+				// new day re-arms the budget.
+					log(`loop 2: ${user} stopped at step "${step}" for the day`);
+					return;
+				}
+			} else {
+				await (runner as DeterministicRunner)(host, user, now);
+			}
+		} catch (error) {
+			// The step failed; the pass moves on — a deterministic step
+			// wedging the cursor forever would be worse than skipping it
+			// this pass (idempotent steps make a later pass safe).
+			log(
 					`loop 2: ${user} step "${step}" failed: ${
 						error instanceof Error ? error.message : String(error)
-					}`,
-				);
-			}
-		} else if (!MODEL_STEPS.has(step)) {
-			log(`loop 2: ${user} has no runner for step "${step}"`);
+				}`,
+			);
 		}
-		cursor = { ...cursor, done: cursor.done + 1 };
-		await writePass(host, user, cursor);
+		state.cursor = { ...state.cursor, done: state.cursor.done + 1 };
+		await writePass(host, user, state.cursor);
 	}
 }

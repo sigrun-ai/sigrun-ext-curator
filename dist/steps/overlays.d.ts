@@ -14,16 +14,25 @@
  *
  * - CHANGED hash → the overlay is QUEUED for a re-check in
  *   `overlay-recheck-queue.json` under the user's state dir (the file
- *   name this repo chose for the seam; Task B4's `overlay-recheck`
- *   step takes it from there). Queueing is all B3 does — deciding
+ *   name this repo chose for the seam; the `overlay-recheck` step
+ *   takes it from there). Queueing is all B3 does — deciding
  *   keep/drop/rewrite takes a model and is the next step's business.
  *   Keys dedup by their canonical JSON, so a pass that re-observes
  *   the same drift twice queues it once.
  *
  * Deterministic by design: reads + one `markOrphans` + one state-file
  * write; no model, no interaction.
+ *
+ * Task B4 adds the RE-CHECK half: `recheckOverlays` (the loop-2 model
+ * step) drains the queue, one `digestRun` per drifted key, and applies
+ * the run's verdict — keep (re-anchor the same text on the new hash),
+ * drop (remove), rewrite (put the verdict's new text), or unsure (ONE
+ * `curator.overlay-question` interaction in the user's most recent
+ * owned conversation, applied by `overlayQuestionHandler` from
+ * `interactionSettled`). An unparseable verdict changes nothing.
  */
-import type { CurationOverlayKey, SigrunHost } from "@sigrun/sigrun/extension";
+import type { CurationOverlayKey, SigrunHost, SigrunLifecycleHandlers } from "@sigrun/sigrun/extension";
+import { type ModelStepDeps } from "./run.js";
 /**
  * The overlay-recheck queue's file name under the user's state dir —
  * the seam B3 writes and Task B4's `overlay-recheck` step consumes.
@@ -51,3 +60,29 @@ export declare class OverlayRecheckQueue {
  * drifted overlay for a re-check (loop 2 step `overlay-detect`).
  */
 export declare function detectOverlayDrift(host: SigrunHost, user: string): Promise<void>;
+/**
+ * The overlay-recheck step (loop 2 step `overlay-recheck`): drain the
+ * re-check queue and re-check every drifted overlay — ONE digest run
+ * per key, under the daily budget. Verdicts apply immediately
+ * (keep/drop/rewrite); "unsure" asks the user (the design's only
+ * prompt) and the answer applies through {@link overlayQuestionHandler}.
+ * Answers FALSE when the daily budget ran out mid-queue (the pass
+ * stops for the day; the keys still queued re-check next pass — the
+ * re-check queue only drains as keys complete).
+ *
+ * Crash-durability posture (the B3 carry): `take()` is read-then-clear,
+ * never at-least-once — DETECTION is the system of record; a lost
+ * queue entry self-heals on the next detect pass. A crash after a
+ * run but before its verdict applied wastes one model run, nothing
+ * more (the verdict is re-derived next pass).
+ */
+export declare function recheckOverlays(deps: ModelStepDeps): Promise<boolean>;
+/**
+ * The `interactionSettled` half: apply a settled overlay question's
+ * answer. Only ANSWERED records with a `verdict` of keep/drop apply;
+ * every other terminal status (skipped, expired, cancelled) changes
+ * nothing. `keep` re-anchors the remembered overlay text on the
+ * remembered hash; `drop` removes the overlay. Idempotent per callId
+ * (an applied question leaves the pending file).
+ */
+export declare function overlayQuestionHandler(host: SigrunHost): Pick<SigrunLifecycleHandlers, "interactionSettled">;

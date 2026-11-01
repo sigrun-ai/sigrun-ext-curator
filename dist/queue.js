@@ -104,8 +104,12 @@ export async function writeStateJson(stateDir, name, value) {
     await mkdir(stateDir, { recursive: true });
     await writeFile(join(stateDir, name), `${JSON.stringify(value, null, "\t")}\n`, "utf8");
 }
-/** Read the digest queue's entries; absent/malformed → []. */
-async function readDigestQueue(file) {
+/** Read the digest queue file path for one user's state dir. */
+function digestQueueFile(stateDir) {
+    return join(stateDir, DIGEST_QUEUE_FILE);
+}
+/** Read the digest queue from a file; absent/malformed → []. */
+async function readDigestQueueFile(file) {
     const parsed = await readStateJson(file, {});
     if (!Array.isArray(parsed.conversations))
         return [];
@@ -114,14 +118,33 @@ async function readDigestQueue(file) {
         typeof entry.id === "number" &&
         Array.isArray(entry.hints));
 }
+/** Read the digest queue's entries for one user; absent/malformed → []. */
+export async function readDigestQueue(host, user) {
+    return await readDigestQueueFile(digestQueueFile(host.stores.user(user).paths.state));
+}
+/** Overwrite the digest queue's entries (the digest step's write-back). */
+export async function writeDigestQueue(host, user, conversations) {
+    await writeStateJson(host.stores.user(user).paths.state, DIGEST_QUEUE_FILE, { conversations });
+}
+/**
+ * Remove one conversation's digest entry (the digest step, after the
+ * review completed and took ownership of its hints). Idempotent.
+ */
+export async function removeDigestEntry(host, user, conversationId) {
+    const queue = [...(await readDigestQueue(host, user))];
+    const next = queue.filter((entry) => entry.id !== conversationId);
+    if (next.length === queue.length)
+        return; // absent: nothing to remove
+    await writeDigestQueue(host, user, next);
+}
 /**
  * Queue one conversation for loop 2's digest (Task B4 consumes): append
  * to `digest-queue.json` under the user's state dir, dedup by id, the
  * taken hints merged into the existing entry by hint id (never dropped).
  */
 export async function queueDigest(host, user, conversationId, hints = []) {
-    const stateDir = host.stores.user(user).paths.state;
-    const queue = [...(await readDigestQueue(join(stateDir, DIGEST_QUEUE_FILE)))];
+    const file = digestQueueFile(host.stores.user(user).paths.state);
+    const queue = [...(await readDigestQueueFile(file))];
     const existing = queue.find((entry) => entry.id === conversationId);
     if (existing === undefined) {
         queue.push({ id: conversationId, hints });
@@ -136,7 +159,7 @@ export async function queueDigest(host, user, conversationId, hints = []) {
             return; // nothing new
         queue[queue.indexOf(existing)] = { id: conversationId, hints: merged };
     }
-    await writeStateJson(stateDir, DIGEST_QUEUE_FILE, { conversations: queue });
+    await writeDigestQueue(host, user, queue);
 }
 /** The refunded-hints file name under the user's state dir. */
 const PENDING_HINTS_FILE = "pending-hints.json";

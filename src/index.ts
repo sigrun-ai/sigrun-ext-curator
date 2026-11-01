@@ -46,6 +46,7 @@ import { createLoop1 } from "./loop1.js";
 import { createLoop2 } from "./loop2.js";
 import { Backoff } from "./backoff.js";
 import { ReviewQueue } from "./queue.js";
+import { overlayQuestionHandler } from "./steps/overlays.js";
 
 /** The durable task kind the tick job fires (TaskRecord.kind). */
 export const CURATOR_TICK_TASK = "curator.tick";
@@ -161,7 +162,12 @@ export default function createCurator(
 		queue: new ReviewQueue(),
 		backoff: new Backoff(),
 	});
-	const loop2 = createLoop2({ host });
+	// Loop 2 needs no factory-time binding: the tick task builds its own
+	// `createLoop2({ host })` per phase (the job is the only scheduler).
+	// The overlay question's answer applies here (Task B4): the
+	// unsure-overlay interaction seeded by the re-check step settles
+	// through the generic interaction lifecycle.
+	const overlayAnswers = overlayQuestionHandler(host);
 	return {
 		extension: defineExtension({
 			name: "curator",
@@ -170,6 +176,8 @@ export default function createCurator(
 		// Loop 1's decision hook: decide + enqueue + return (the review
 		// runs on the queue; the hook deadline never bounds it).
 		runSettled: loop1.onRunSettled,
+		// The overlay question's answer hook (the design's only prompt).
+		interactionSettled: overlayAnswers.interactionSettled,
 		// Loop 2's cadence: the ONLY time-based scheduler (the worker
 		// `every` is retired; jobs are the timer).
 		jobs: [
@@ -222,9 +230,27 @@ export {
 	detectOverlayDrift,
 	OverlayRecheckQueue,
 	RECHECK_QUEUE_FILE,
+	recheckOverlays,
+	overlayQuestionHandler,
 } from "./steps/overlays.js";
+export { digestsStep, reviewDigest, DIGEST_VIEW_GRACE_MS } from "./steps/digests.js";
+export { dietStep, DIET_BYTES, DIET_UNCHANGED_MS } from "./steps/diet.js";
+export { mergeStep } from "./steps/merge.js";
+export { maintainTargets } from "./steps/targets.js";
+export {
+	digestRunWithBudget,
+	parseVerdict,
+	MODEL_STEP_MAX_TOOL_CALLS,
+	MODEL_STEP_MAX_OUTPUT_TOKENS,
+} from "./steps/run.js";
+export type { ModelStepDeps, RunBudget, DigestRun, DigestRunInput } from "./steps/run.js";
 export { Backoff } from "./backoff.js";
-export { ReviewQueue, queueDigest } from "./queue.js";
+export {
+	ReviewQueue,
+	queueDigest,
+	readDigestQueue,
+	removeDigestEntry,
+} from "./queue.js";
 export type { ReviewJob } from "./queue.js";
 export { reviewInstruction } from "./prompts.js";
 export type { ReviewInstructionOpts } from "./prompts.js";

@@ -14,22 +14,44 @@
  *
  * - CHANGED hash → the overlay is QUEUED for a re-check in
  *   `overlay-recheck-queue.json` under the user's state dir (the file
- *   name this repo chose for the seam; Task B4's `overlay-recheck`
- *   step takes it from there). Queueing is all B3 does — deciding
+ *   name this repo chose for the seam; the `overlay-recheck` step
+ *   takes it from there). Queueing is all B3 does — deciding
  *   keep/drop/rewrite takes a model and is the next step's business.
  *   Keys dedup by their canonical JSON, so a pass that re-observes
  *   the same drift twice queues it once.
  *
  * Deterministic by design: reads + one `markOrphans` + one state-file
  * write; no model, no interaction.
+ *
+ * Task B4 adds the RE-CHECK half: `recheckOverlays` (the loop-2 model
+ * step) drains the queue, one `digestRun` per drifted key, and applies
+ * the run's verdict — keep (re-anchor the same text on the new hash),
+ * drop (remove), rewrite (put the verdict's new text), or unsure (ONE
+ * `curator.overlay-question` interaction in the user's most recent
+ * owned conversation, applied by `overlayQuestionHandler` from
+ * `interactionSettled`). An unparseable verdict changes nothing.
  */
 
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type {
 	CurationOverlayKey,
+	ExtensionLifecycleHandler,
+	HandlerContext,
+	InteractionRecord,
+	MemoryEventApi,
 	SigrunHost,
+	SigrunLifecycleHandlers,
 } from "@sigrun/sigrun/extension";
 import { readStateJson, writeStateJson } from "../queue.js";
+import { CURATOR_OVERLAY_QUESTION_KIND } from "../index.js";
+import {
+	digestRunWithBudget,
+	parseVerdict,
+	stepLog,
+	type ModelStepDeps,
+} from "./run.js";
 
 /**
  * The overlay-recheck queue's file name under the user's state dir —
@@ -136,4 +158,329 @@ export async function detectOverlayDrift(
 		})
 		.map((overlay) => overlay.key);
 	await new OverlayRecheckQueue(host, user).enqueue(drifted);
+}
+
+// ─── The re-check half (Task B4) ───────────────────────────────────────────
+
+/** The re-check verdict shape (the run's final text, fixed JSON). */
+interface OverlayVerdict {
+	readonly verdict?: unknown;
+	readonly text?: unknown;
+}
+
+/** The question record's `details` (what the settled handler applies). */
+interface QuestionDetails {
+	readonly user: string;
+	readonly key: CurationOverlayKey;
+	readonly upstreamHash: string;
+	readonly overlayText: string;
+	readonly callId: string;
+}
+
+/** The overlay re-check's allow list: it writes nothing itself. */
+const RECHECK_ALLOW: readonly string[] = ["skill_manage"];
+
+/** The pending questions file under the user's state dir. */
+const PENDING_QUESTIONS_FILE = "overlay-questions.json";
+
+/** Read the user's pending overlay questions; absent/malformed → []. */
+async function readPendingQuestions(
+	host: SigrunHost,
+	user: string,
+): Promise<QuestionDetails[]> {
+	const parsed = await readStateJson<unknown>(
+		join(host.stores.user(user).paths.state, PENDING_QUESTIONS_FILE),
+		[],
+	);
+	if (!Array.isArray(parsed)) return [];
+	return parsed.filter(
+			(entry): entry is QuestionDetails =>
+				typeof entry === "object" &&
+				entry !== null &&
+				typeof (entry as QuestionDetails).user === "string" &&
+				typeof (entry as QuestionDetails).key?.root === "string" &&
+				typeof (entry as QuestionDetails).key?.skill === "string" &&
+				typeof (entry as QuestionDetails).upstreamHash === "string" &&
+				typeof (entry as QuestionDetails).overlayText === "string" &&
+				typeof (entry as QuestionDetails).callId === "string",
+	);
+}
+
+/** Write the user's pending overlay questions. */
+async function writePendingQuestions(
+	host: SigrunHost,
+	user: string,
+	questions: readonly QuestionDetails[],
+): Promise<void> {
+	await writeStateJson(
+		host.stores.user(user).paths.state,
+		PENDING_QUESTIONS_FILE,
+		questions,
+	);
+}
+
+/**
+ * The overlay-recheck step (loop 2 step `overlay-recheck`): drain the
+ * re-check queue and re-check every drifted overlay — ONE digest run
+ * per key, under the daily budget. Verdicts apply immediately
+ * (keep/drop/rewrite); "unsure" asks the user (the design's only
+ * prompt) and the answer applies through {@link overlayQuestionHandler}.
+ * Answers FALSE when the daily budget ran out mid-queue (the pass
+ * stops for the day; the keys still queued re-check next pass — the
+ * re-check queue only drains as keys complete).
+ *
+ * Crash-durability posture (the B3 carry): `take()` is read-then-clear,
+ * never at-least-once — DETECTION is the system of record; a lost
+ * queue entry self-heals on the next detect pass. A crash after a
+ * run but before its verdict applied wastes one model run, nothing
+ * more (the verdict is re-derived next pass).
+ */
+export async function recheckOverlays(deps: ModelStepDeps): Promise<boolean> {
+	const { host, user } = deps;
+	const log = stepLog(deps);
+	if (deps.budget.left() < 1) return false; // the day is spent: stop the pass
+	const keys = [...(await new OverlayRecheckQueue(host, user).take())];
+	for (const key of keys) {
+		if (deps.now().getTime() >= deps.deadlineAt) return false;
+		const applied = await recheckOne(deps, key).catch((error: unknown) => {
+			log(
+				`loop 2: ${user} overlay re-check of ${key.skill} failed: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return true;
+		});
+		if (!applied) return false; // out of daily budget: stop for the day
+	}
+	return true;
+}
+
+/** Re-check one key: run, parse the verdict, apply it. */
+async function recheckOne(deps: ModelStepDeps, key: CurationOverlayKey): Promise<boolean> {
+	const { host, user } = deps;
+	const store = host.curation.overlays(user);
+	const overlay = await store.get(key);
+	const upstream = await host.curation.upstream(user, key);
+	if (overlay === undefined || upstream === undefined) return true;
+	const run = await digestRunWithBudget(deps, {
+		input: recheckInput(overlay.text, overlay.upstreamHash, upstream.body, upstream.hash),
+		allow: RECHECK_ALLOW,
+	});
+	if (run === undefined) return false;
+	if (run.result.status !== "completed") return true;
+	const verdict = parseVerdict<OverlayVerdict>(run.result.text);
+	if (verdict === undefined) return true; // unparseable: no change
+	const meta = {
+		actor: "curator" as const,
+		reason: "overlay re-check after upstream drift",
+		reviewId: run.reviewId,
+	};
+	switch (verdict.verdict) {
+		case "keep":
+			await store.put(key, overlay.text, upstream.hash, meta);
+			return true;
+		case "drop":
+			await store.remove(key, meta);
+			return true;
+		case "rewrite":
+			if (typeof verdict.text !== "string" || verdict.text === "") return true;
+			await store.put(key, verdict.text, upstream.hash, meta);
+			return true;
+		case "unsure":
+			await askOverlayQuestion(deps, key, overlay.text, upstream.hash);
+			return true;
+		default:
+			return true; // unknown verdict word: no change
+	}
+}
+
+/** The re-check run's input: the overlay, the version it was written
+ *  against, and the NEW upstream — the three things the brief names. */
+function recheckInput(
+	overlayText: string,
+	oldHash: string,
+	newBody: string,
+	newHash: string,
+): string {
+	return [
+		"You are the curator. This overlay (the user's notes for a skill they do not own) was written against an upstream skill that has since changed. Decide what happens to it.",
+		"",
+		"Your notes for the old upstream:",
+		overlayText,
+		"",
+		"The old upstream's version id:",
+		oldHash,
+		"",
+		"The new upstream in full:",
+		newBody,
+		"",
+		`Its new version id is ${newHash}.`,
+		"",
+		'Decide, and answer with ONLY this JSON: {"verdict":"keep"} when the notes still apply to the new upstream (they will be re-anchored to it); {"verdict":"drop"} when the change makes the notes obsolete; {"verdict":"rewrite","text":"…"} when the notes need a rewrite for the new upstream (the new notes text); or {"verdict":"unsure"} when you cannot decide — the user will be asked.',
+	].join("\n");
+}
+
+/** The zero-signal context the seed call runs under (a tick has no
+ *  caller signal — the job's deadline is the bound that matters). */
+const SEED_CONTEXT: HandlerContext = { abortSignal: undefined };
+
+/**
+ * Seed ONE `curator.overlay-question` in the user's MOST RECENT owned
+ * conversation and remember it durably (the settled handler needs the
+ * overlay text and hash — the interaction's `details` carry them, and
+ * the pending-questions file is the crash-safe copy: an answered
+ * question whose apply crashed re-applies on the next handler fire).
+ */
+async function askOverlayQuestion(
+	deps: ModelStepDeps,
+	key: CurationOverlayKey,
+	overlayText: string,
+	upstreamHash: string,
+): Promise<void> {
+	const { host, user } = deps;
+	const owned = await host.conversations.list({ owner: user });
+	const withActivity = owned
+		.filter((row) => row.lastActivityAt !== undefined)
+		.sort(
+			(a, b) =>
+				Date.parse(b.lastActivityAt!) - Date.parse(a.lastActivityAt!),
+		);
+	const target = withActivity[0] ?? owned[owned.length - 1];
+	if (target === undefined) return; // no owned conversation to ask in
+	const callId = `overlay-question-${randomUUID()}`;
+	const details: QuestionDetails = {
+		user,
+		key,
+		upstreamHash,
+		overlayText,
+		callId,
+	};
+	const record: InteractionRecord = {
+		kind: CURATOR_OVERLAY_QUESTION_KIND,
+		callId,
+		status: "pending",
+		createdAt: deps.now().getTime(),
+		body: questionBody(key, overlayText),
+		// SAFETY: cast — `details` is opaque extension-owned JSON by
+		// contract; the structural QuestionDetails shape is JSON-safe.
+		details: details as unknown as InteractionRecord["details"],
+	};
+	await host.seedInteraction(
+		target.id as ConversationId,
+		record,
+		SEED_CONTEXT,
+	);
+	await writePendingQuestions(
+		host,
+		user,
+		[...(await readPendingQuestions(host, user)).filter((q) => q.callId !== callId), details],
+	);
+}
+
+/** The question's form body: exactly keep / drop. The overlay text
+ *  rides a section (a form's children are fields and sections only;
+ *  free blocks live inside a section — the interactions validator's
+ *  rule). */
+function questionBody(
+	key: CurationOverlayKey,
+	overlayText: string,
+): InteractionRecord["body"] {
+	return {
+		v: 1,
+		root: {
+			type: "form",
+			mode: "submit",
+			bind: "answer",
+			submitLabel: "Answer",
+			children: [
+				{
+					type: "section",
+					title: `The upstream skill "${key.skill}" changed under your notes`,
+					children: [
+						{ type: "markdown", text: overlayText },
+						{
+							type: "choice",
+							name: "verdict",
+							label: "Keep the notes?",
+							options: [
+								{ id: "keep", label: "Keep the notes" },
+								{ id: "drop", label: "Drop the notes" },
+							],
+						},
+					],
+				},
+			],
+		},
+	} as InteractionRecord["body"];
+}
+
+/**
+ * The `interactionSettled` half: apply a settled overlay question's
+ * answer. Only ANSWERED records with a `verdict` of keep/drop apply;
+ * every other terminal status (skipped, expired, cancelled) changes
+ * nothing. `keep` re-anchors the remembered overlay text on the
+ * remembered hash; `drop` removes the overlay. Idempotent per callId
+ * (an applied question leaves the pending file).
+ */
+export function overlayQuestionHandler(
+	host: SigrunHost,
+): Pick<SigrunLifecycleHandlers, "interactionSettled"> {
+	return {
+		interactionSettled: async (
+			event: Parameters<ExtensionLifecycleHandler<"interactionSettled">>[0],
+			_api: MemoryEventApi,
+			_context: HandlerContext,
+		): Promise<void> => {
+			if (event.kind !== CURATOR_OVERLAY_QUESTION_KIND) return;
+			if (event.status !== "answered") return;
+			const verdict = event.answer?.["verdict"];
+			if (verdict !== "keep" && verdict !== "drop") return;
+			const questions = await readQuestionsFor(host, event.callId);
+			for (const question of questions) {
+				const store = host.curation.overlays(question.user);
+			const meta = {
+				actor: "curator" as const,
+				reason: `user chose to ${verdict} the overlay`,
+			};
+			if (verdict === "keep") {
+				await store.put(
+					question.key,
+					question.overlayText,
+					question.upstreamHash,
+					meta,
+				);
+			} else {
+				await store.remove(question.key, meta);
+			}
+			await dropQuestion(host, question.user, question.callId);
+		}
+		},
+	};
+}
+
+/** Read one user's pending questions — the handler scans every user's
+ *  file (the event names the callId, not the user). */
+async function readQuestionsFor(
+	host: SigrunHost,
+	callId: string,
+): Promise<QuestionDetails[]> {
+	const found: QuestionDetails[] = [];
+	for (const row of await host.users.list()) {
+		for (const question of await readPendingQuestions(host, row.user)) {
+			if (question.callId === callId) found.push(question);
+		}
+	}
+	return found;
+}
+
+/** Remove an applied question from its user's pending file. */
+async function dropQuestion(
+	host: SigrunHost,
+	user: string,
+	callId: string,
+): Promise<void> {
+	const remaining = (await readPendingQuestions(host, user)).filter(
+		(question) => question.callId !== callId,
+	);
+	await writePendingQuestions(host, user, remaining);
 }
