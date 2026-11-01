@@ -46,10 +46,12 @@ export declare const CURATOR_NOTICE_KIND = "curator.notice";
 /** The unsure-overlay question kind (Task B4's interaction). */
 export declare const CURATOR_OVERLAY_QUESTION_KIND = "curator.overlay-question";
 /**
- * Loop 2's durable body (Task B3 implements the pass; the scaffold's
- * phase commits terminal immediately — a fired tick is a completed tick
- * until the pass lands). One phase; the tick's own deadline is
- * self-imposed inside the pass.
+ * Loop 2's durable body (Task B3): one phase calling `tick(host, now)`
+ * — as many pass fragments as the tick's own 5-minute deadline
+ * allows; unfinished steps resume on the next fired tick through the
+ * per-user pass cursor (`pass.json`). The scaffold's terminal-commit
+ * shape stays: whatever the pass did, the task phase itself only
+ * runs the tick and completes.
  */
 export declare function createTickTask(host: SigrunHost): AnyTask;
 /**
@@ -76,6 +78,10 @@ export { parseCuratorSettings, readSettings, DEFAULT_CURATOR_SETTINGS, } from ".
 export type { CuratorSettings } from "./settings.js";
 export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
 export type { Loop1Deps } from "./loop1.js";
+export { createLoop2, eligibleUsers, tick, IDLE_THRESHOLD_MS, LOOP2_TICK_DEADLINE_MS, FIRST_RUN_GRACE_MS, FULL_PASS_INTERVAL_MS, PASS_FILE, PASS_STEPS, FIRST_TICK_FILE, } from "./loop2.js";
+export type { StepId, PassCursor, TickOptions, Loop2Deps } from "./loop2.js";
+export { archiveUnused, ARCHIVE_UNUSED_DAYS, ARCHIVE_UNUSED_MS, } from "./steps/archive.js";
+export { detectOverlayDrift, OverlayRecheckQueue, RECHECK_QUEUE_FILE, } from "./steps/overlays.js";
 export { Backoff } from "./backoff.js";
 export { ReviewQueue, queueDigest } from "./queue.js";
 export type { ReviewJob } from "./queue.js";

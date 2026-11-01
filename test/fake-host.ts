@@ -95,6 +95,8 @@ export interface FakeHost extends SigrunHost {
 	readonly context: HandlerContext;
 	/** Override curation members per-test (partial over the defaults). */
 	setCuration(overrides: Partial<SigrunCurationHost>): void;
+	/** Set one conversation's `lastActivityAt` (loop 2's idle clock). */
+	setLastActivity(id: ConversationId, iso: string | undefined): void;
 	/** Push one view to every `watch` listener of `id`. */
 	pushView(id: ConversationId, view: ConversationViewWire): void;
 	/** The stored interaction records, keyed `${conversationId}:${callId}`. */
@@ -225,6 +227,7 @@ export async function createFakeHost(
 	const conversationOwners = new Map<ConversationId, string>();
 	const conversationNames = new Map<ConversationId, string>();
 	const conversationArchived = new Map<ConversationId, boolean>();
+	const conversationActivity = new Map<ConversationId, string>();
 	const submissionsByConversation = new Map<
 		ConversationId,
 		SubmissionRecordWire[]
@@ -498,17 +501,19 @@ export async function createFakeHost(
 				for (const id of conversationOwners.keys()) {
 					if (opts?.owner !== undefined && conversationOwners.get(id) !== opts.owner)
 						continue;
-					const archived = conversationArchived.get(id) ?? false;
-					if (opts?.archived !== undefined && archived !== opts.archived) continue;
-					summaries.push({
-						id,
-						root: false,
-						owner: conversationOwners.get(id),
-						name: conversationNames.get(id),
-						source: "gateway",
-						archived,
+				const archived = conversationArchived.get(id) ?? false;
+				if (opts?.archived !== undefined && archived !== opts.archived) continue;
+				const lastActivityAt = conversationActivity.get(id);
+				summaries.push({
+					id,
+					root: false,
+					owner: conversationOwners.get(id),
+					name: conversationNames.get(id),
+					source: "gateway",
+					archived,
 						pinned: false,
 						access: "write",
+						...(lastActivityAt === undefined ? {} : { lastActivityAt }),
 					});
 				}
 				return summaries;
@@ -668,6 +673,10 @@ export async function createFakeHost(
 		...host,
 		calls,
 		context: HANDLER_CONTEXT,
+		setLastActivity: (id, iso) => {
+			if (iso === undefined) conversationActivity.delete(id);
+			else conversationActivity.set(id, iso);
+		},
 		setCuration: (overrides) => {
 			for (const [key, value] of Object.entries(overrides)) {
 				// Scripted members record like the defaults — `fake.calls` is

@@ -43,6 +43,7 @@ import type {
 	SurfaceDef,
 } from "@sigrun/sigrun/extension";
 import { createLoop1 } from "./loop1.js";
+import { createLoop2 } from "./loop2.js";
 import { Backoff } from "./backoff.js";
 import { ReviewQueue } from "./queue.js";
 
@@ -58,19 +59,21 @@ export const CURATOR_NOTICE_KIND = "curator.notice";
 export const CURATOR_OVERLAY_QUESTION_KIND = "curator.overlay-question";
 
 /**
- * Loop 2's durable body (Task B3 implements the pass; the scaffold's
- * phase commits terminal immediately — a fired tick is a completed tick
- * until the pass lands). One phase; the tick's own deadline is
- * self-imposed inside the pass.
+ * Loop 2's durable body (Task B3): one phase calling `tick(host, now)`
+ * — as many pass fragments as the tick's own 5-minute deadline
+ * allows; unfinished steps resume on the next fired tick through the
+ * per-user pass cursor (`pass.json`). The scaffold's terminal-commit
+ * shape stays: whatever the pass did, the task phase itself only
+ * runs the tick and completes.
  */
 export function createTickTask(host: SigrunHost): AnyTask {
-	void host; // The pass reads the host (Task B3); the scaffold does not.
 	return defineTask<Record<string, never>, { phase: "tick" }, void, object>({
 		name: CURATOR_TICK_TASK,
 		version: CURATOR_TICK_VERSION,
 		initial: () => ({ phase: "tick" }),
 		phases: {
 			tick: async (_task, runtime, context) => {
+				await createLoop2({ host }).tick();
 				await runtime.commit(
 					() => ({
 						status: "terminal" as const,
@@ -158,6 +161,7 @@ export default function createCurator(
 		queue: new ReviewQueue(),
 		backoff: new Backoff(),
 	});
+	const loop2 = createLoop2({ host });
 	return {
 		extension: defineExtension({
 			name: "curator",
@@ -196,6 +200,29 @@ export {
 	LOOP1_DEADLINE_MS,
 } from "./loop1.js";
 export type { Loop1Deps } from "./loop1.js";
+export {
+	createLoop2,
+	eligibleUsers,
+	tick,
+	IDLE_THRESHOLD_MS,
+	LOOP2_TICK_DEADLINE_MS,
+	FIRST_RUN_GRACE_MS,
+	FULL_PASS_INTERVAL_MS,
+	PASS_FILE,
+	PASS_STEPS,
+	FIRST_TICK_FILE,
+} from "./loop2.js";
+export type { StepId, PassCursor, TickOptions, Loop2Deps } from "./loop2.js";
+export {
+	archiveUnused,
+	ARCHIVE_UNUSED_DAYS,
+	ARCHIVE_UNUSED_MS,
+} from "./steps/archive.js";
+export {
+	detectOverlayDrift,
+	OverlayRecheckQueue,
+	RECHECK_QUEUE_FILE,
+} from "./steps/overlays.js";
 export { Backoff } from "./backoff.js";
 export { ReviewQueue, queueDigest } from "./queue.js";
 export type { ReviewJob } from "./queue.js";
