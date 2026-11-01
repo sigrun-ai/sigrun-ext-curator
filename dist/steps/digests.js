@@ -6,24 +6,25 @@
  * OWNER'S attributed turns plus the assistant replies to them.
  *
  * Attribution (fail closed, P1's rule — another user's words can never
- * enter the owner's digest): the step watches the conversation through
- * `host.conversations.watch` and attributes turns per-entry from the
- * `sigrun.authors` doc when the watched view carries one
- * (`docs["sigrun.authors"].byEntry`, entry id → author). Without the
- * doc, the step falls back to `curation.eligibility`: an owner-only
- * conversation with zero unattributed entries attributes EVERY user
- * turn to the owner (that is what `ownerOnly` means). A mixed
- * conversation with no per-entry source is SKIPPED — no user turn is
- * attributable, so none is included, and skipping all of them is the
- * only safe digest; the queue entry stays and self-heals the day the
- * host serves per-entry attribution.
+ * enter the owner's digest): the PRIMARY per-entry source is
+ * `curation.authors(conversationId)` — core's map of every user-input
+ * entry in the active context to its author (an entry ABSENT from the
+ * map or mapped to `undefined` is unattributed and never the owner's).
+ * When the map is EMPTY (no attributed entry at all — a pre-P1-shaped
+ * or fresh conversation), the step falls back to `curation.eligibility`:
+ * an owner-only conversation with zero unattributed entries attributes
+ * EVERY user turn to the owner (that is what `ownerOnly` means). A
+ * mixed conversation whose map has no entry for the digesting user has
+ * no attributable turn — none is included, the fail-closed skip below
+ * leaves it queued.
  *
- * ⚠ HOST GAP (2026-11-01): core's watched view mounts only the five
- * pi-durable built-in docs — `sigrun.authors` is NOT among them, so
- * against today's core only the eligibility fallback digests anything.
- * Mounting the authors doc (projected to `byEntry`) is a CORE change
- * (src/harness — not this repo); until it lands, mixed conversations
- * wait in the queue. Recorded in the task report.
+ * ✅ HOST GAP RESOLVED (2026-11-01): this step originally read per-entry
+ * authors from a `sigrun.authors` doc projected onto the watched view
+ * (`docs["sigrun.authors"].byEntry`) — but pi-durable's structural view
+ * mounts only its five built-in docs, so that projection never existed
+ * and mixed conversations digested NOTHING. Core now serves the map
+ * directly (`host.curation.authors`, core commit "feat(curation):
+ * per-entry author map on host.curation"); the view-doc path is gone.
  *
  * Assistant replies: an assistant entry is included only when it
  * belongs to the run an OWNER turn started — the entries after an
@@ -168,12 +169,21 @@ async function watchFirstFrame(deps, conversationId) {
  *  attributable (the fail-closed skip). */
 async function ownerDigest(deps, conversationId, view) {
     const { host, user } = deps;
-    // Per-entry attribution, when the view carries the authors doc.
-    const byEntry = readByEntry(view);
-    let everyTurnIsOwners = byEntry !== undefined;
-    if (byEntry === undefined) {
-        // The fallback: an owner-only conversation with zero unattributed
-        // entries attributes every user turn to the owner.
+    // Per-entry attribution, the PRIMARY source: entry id → author,
+    // skipping unattributed entries (author undefined — an entry absent
+    // from this record reads unattributed, so `undefined === user` is
+    // false and the turn is excluded: never learn from unattributed).
+    const attributed = await host.curation.authors(conversationId);
+    const byEntry = {};
+    for (const [entryId, author] of attributed) {
+        if (author !== undefined)
+            byEntry[String(entryId)] = author;
+    }
+    // The empty map means "no attributed entry at all" (a pre-P1-shaped
+    // or fresh conversation): fall back to the whole-conversation
+    // eligibility read so owner-only conversations still digest.
+    let everyTurnIsOwners = false;
+    if (Object.keys(byEntry).length === 0) {
         const eligibility = await host.curation.eligibility(conversationId);
         everyTurnIsOwners =
             eligibility.owner === user && eligibility.ownerOnly && eligibility.unattributed === 0;
@@ -181,10 +191,11 @@ async function ownerDigest(deps, conversationId, view) {
     const lines = [];
     let inOwnerRun = false;
     let sawOwnerTurn = false;
+    const hasPerEntry = Object.keys(byEntry).length > 0;
     for (const entry of view.entries ?? []) {
         if (USER_KINDS.has(entry.kind)) {
-            const author = byEntry?.[String(entry.id)];
-            inOwnerRun = byEntry !== undefined ? author === user : everyTurnIsOwners;
+            const author = byEntry[String(entry.id)];
+            inOwnerRun = hasPerEntry ? author === user : everyTurnIsOwners;
             if (!inOwnerRun)
                 continue;
             const text = entryText(entry, "user");
@@ -207,21 +218,6 @@ async function ownerDigest(deps, conversationId, view) {
         return undefined;
     return [`Conversation digest (only ${user}'s turns and the replies to them):`, "", ...lines]
         .join("\n");
-}
-/** The `byEntry` projection of the authors doc, when the view has one. */
-function readByEntry(view) {
-    const doc = (view.docs ?? {})["sigrun.authors"];
-    if (typeof doc !== "object" || doc === null)
-        return undefined;
-    const byEntry = doc.byEntry;
-    if (typeof byEntry !== "object" || byEntry === null)
-        return undefined;
-    const result = {};
-    for (const [id, author] of Object.entries(byEntry)) {
-        if (typeof author === "string")
-            result[id] = author;
-    }
-    return result;
 }
 /** One entry's text for `role` (string content, or the text blocks). */
 function entryText(entry, role) {

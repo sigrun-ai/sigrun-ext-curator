@@ -330,6 +330,7 @@ describe("the loops fire notify on a changed review", () => {
 					ownerOnly: false,
 					unattributed: 0,
 				}),
+				authors: async () => new Map([[10 as EntryId, ALICE]]),
 				digestRun: async () =>
 					reviewed([
 						{ changeId: "chg-1", summary: "noted the acme port quirk", target: "memory:markdown" },
@@ -354,7 +355,7 @@ describe("the loops fire notify on a changed review", () => {
 				entries: [
 					{ id: 10, kind: "pi.user", model: [{ role: "user", content: "acme advice" }] },
 				],
-				docs: { "sigrun.authors": { byEntry: { "10": ALICE } } },
+				docs: {},
 				steer: { busy: false, queued: 0 },
 			} as never;
 			// Push the frame the step waits for.
@@ -462,6 +463,7 @@ describe("the loops fire notify on a changed review", () => {
 					ownerOnly: false,
 					unattributed: 0,
 				}),
+				authors: async () => new Map([[10 as EntryId, ALICE]]),
 				digestRun: async () =>
 					reviewed([
 						{ changeId: "chg-1", summary: "noted the acme port quirk", target: "memory:markdown" },
@@ -493,7 +495,7 @@ describe("the loops fire notify on a changed review", () => {
 					entries: [
 						{ id: 10, kind: "pi.user", model: [{ role: "user", content: "acme advice" }] },
 					],
-					docs: { "sigrun.authors": { byEntry: { "10": ALICE } } },
+					docs: {},
 					steer: { busy: false, queued: 0 },
 				} as never);
 			};

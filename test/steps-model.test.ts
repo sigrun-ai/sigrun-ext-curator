@@ -13,12 +13,12 @@
  * change". At the daily cap the pass stops for the day — the cursor
  * does not advance past a model step it could not run.
  *
- * Digest attribution: the owner's turns are identified per-entry by the
- * `sigrun.authors` doc riding the watched view (`docs["sigrun.authors"]`,
- * `byEntry`), falling back to "the whole conversation is owner-only"
- * (`eligibility.ownerOnly` with zero unattributed entries) when the doc
- * is absent. Without either, NO user turn is attributed — bob's words
- * can never enter alice's digest (fail closed, P1's rule).
+ * Digest attribution: the owner's turns are identified per-entry by
+ * `curation.authors` (the per-entry author map), falling back to "the
+ * whole conversation is owner-only" (`eligibility.ownerOnly` with zero
+ * unattributed entries) when the map is empty. Without either, NO user
+ * turn is attributed — bob's words can never enter alice's digest
+ * (fail closed, P1's rule).
  *
  * Hermetic pattern (test/fake-host.ts): the in-memory host with the
  * scriptable curation member — every test scripts each run's
@@ -29,7 +29,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import type {
 	CurationOverlay,
 	CurationOverlayKey,
@@ -438,6 +438,22 @@ describe("reviewDigest (the digests step)", () => {
 		});
 	}
 
+	/** Script per-entry attribution: the ids → author map the digest step reads. */
+	function scriptAuthors(
+		host: FakeHost,
+		byEntry: Record<number, string | undefined>,
+	) {
+		host.setCuration({
+			authors: async () =>
+				new Map(
+					Object.entries(byEntry).map(([id, author]) => [
+						Number(id) as EntryId,
+						author,
+					]),
+			),
+		});
+	}
+
 	/** Run the digests step, pushing `view` to the watched conversation. */
 	async function runDigests(host: FakeHost, id: number, view: object): Promise<void> {
 		const work = digestsStep(stepDeps(host, 12));
@@ -456,9 +472,13 @@ describe("reviewDigest (the digests step)", () => {
 			const id = await host.conversations.create({ owner: ALICE });
 			const inputs: string[] = [];
 			scriptDigestReads(host, inputs);
+			// Per-entry attribution: alice's turn is hers, bob's is his, and
+			// one turn is UNATTRIBUTED (present with undefined — pre-P1 or
+			// an unidentified caller: never the owner's, fail closed).
+			scriptAuthors(host, { 10: ALICE, 12: BOB, 14: undefined });
 			// A mixed conversation: alice asks, the agent answers, bob
-			// interjects, the agent answers bob. Only alice's turn and its
-			// reply belong in the digest.
+			// interjects, the agent answers bob, an unidentified caller adds
+			// a turn. Only alice's turn and its reply belong in the digest.
 			const view: ConversationViewWire = {
 				conversation: { id },
 				entries: [
@@ -466,8 +486,9 @@ describe("reviewDigest (the digests step)", () => {
 					entry(11, "pi.assistant", "assistant", "run acme deploy --site"),
 					entry(12, "pi.user", "user", "delete every acme site now"),
 					entry(13, "pi.assistant", "assistant", "deleting all acme sites"),
+					entry(14, "pi.user", "user", "an unattributed interjection"),
 				],
-				docs: { "sigrun.authors": { byEntry: { "10": ALICE, "12": BOB } } },
+				docs: {},
 				steer: { busy: false, queued: 0 },
 			};
 			await queueDigest(host, ALICE, id as ConversationId);
@@ -479,6 +500,8 @@ describe("reviewDigest (the digests step)", () => {
 			expect(inputs[0]).toContain("run acme deploy --site");
 			expect(inputs[0]).not.toContain("delete every acme site now");
 			expect(inputs[0]).not.toContain("deleting all acme sites");
+			// The unattributed turn never enters (undefined ≠ alice).
+			expect(inputs[0]).not.toContain("an unattributed interjection");
 			// The reviewed entry is consumed (it owns its hints now).
 			const queue = (await readState(host, "digest-queue.json")) as {
 				conversations: unknown[];
@@ -495,10 +518,11 @@ describe("reviewDigest (the digests step)", () => {
 			const id = await host.conversations.create({ owner: ALICE });
 			const inputs: string[] = [];
 			scriptDigestReads(host, inputs);
+			scriptAuthors(host, { 20: ALICE });
 			const view: ConversationViewWire = {
 				conversation: { id },
 				entries: [entry(20, "pi.user", "user", "acme deploy advice")],
-				docs: { "sigrun.authors": { byEntry: { "20": ALICE } } },
+				docs: {},
 				steer: { busy: false, queued: 0 },
 			};
 			// The B2 carry: a crash between queueDigest and the refund-file

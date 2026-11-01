@@ -50,9 +50,8 @@ view.
 `/learn` asks for a review of the conversation NOW — bypassing the
 call-count threshold but keeping every eligibility rule. In a
 conversation with other participants the answer says so and the
-owner's hints are queued; the digest itself waits on the core's
-per-entry attribution fix — until that ships, mixed-conversation
-digests are deferred and nothing is learned from them. Focus, when
+owner's hints are queued; the digest reviews the OWNER'S attributed
+turns only — another participant's words never enter it. Focus, when
 given, rides the review's instruction. `/learn` works
 while paused: the pause switch stops the automatic loops, not your
 own explicit ask.

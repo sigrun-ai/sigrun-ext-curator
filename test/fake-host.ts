@@ -277,6 +277,12 @@ export async function createFakeHost(
 			record("curation.modelCallsSince", id, entryId);
 			return 0;
 		},
+		authors: async (id) => {
+			record("curation.authors", id);
+			// The inert default: no attributed entries — the digest step's
+			// eligibility fallback (an empty map means "no per-entry source").
+			return new Map<EntryId, string | undefined>();
+		},
 		takeHints: async (id) => {
 			record("curation.takeHints", id);
 			return [];

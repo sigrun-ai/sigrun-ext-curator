@@ -6,24 +6,25 @@
  * OWNER'S attributed turns plus the assistant replies to them.
  *
  * Attribution (fail closed, P1's rule — another user's words can never
- * enter the owner's digest): the step watches the conversation through
- * `host.conversations.watch` and attributes turns per-entry from the
- * `sigrun.authors` doc when the watched view carries one
- * (`docs["sigrun.authors"].byEntry`, entry id → author). Without the
- * doc, the step falls back to `curation.eligibility`: an owner-only
- * conversation with zero unattributed entries attributes EVERY user
- * turn to the owner (that is what `ownerOnly` means). A mixed
- * conversation with no per-entry source is SKIPPED — no user turn is
- * attributable, so none is included, and skipping all of them is the
- * only safe digest; the queue entry stays and self-heals the day the
- * host serves per-entry attribution.
+ * enter the owner's digest): the PRIMARY per-entry source is
+ * `curation.authors(conversationId)` — core's map of every user-input
+ * entry in the active context to its author (an entry ABSENT from the
+ * map or mapped to `undefined` is unattributed and never the owner's).
+ * When the map is EMPTY (no attributed entry at all — a pre-P1-shaped
+ * or fresh conversation), the step falls back to `curation.eligibility`:
+ * an owner-only conversation with zero unattributed entries attributes
+ * EVERY user turn to the owner (that is what `ownerOnly` means). A
+ * mixed conversation whose map has no entry for the digesting user has
+ * no attributable turn — none is included, the fail-closed skip below
+ * leaves it queued.
  *
- * ⚠ HOST GAP (2026-11-01): core's watched view mounts only the five
- * pi-durable built-in docs — `sigrun.authors` is NOT among them, so
- * against today's core only the eligibility fallback digests anything.
- * Mounting the authors doc (projected to `byEntry`) is a CORE change
- * (src/harness — not this repo); until it lands, mixed conversations
- * wait in the queue. Recorded in the task report.
+ * ✅ HOST GAP RESOLVED (2026-11-01): this step originally read per-entry
+ * authors from a `sigrun.authors` doc projected onto the watched view
+ * (`docs["sigrun.authors"].byEntry`) — but pi-durable's structural view
+ * mounts only its five built-in docs, so that projection never existed
+ * and mixed conversations digested NOTHING. Core now serves the map
+ * directly (`host.curation.authors`, core commit "feat(curation):
+ * per-entry author map on host.curation"); the view-doc path is gone.
  *
  * Assistant replies: an assistant entry is included only when it
  * belongs to the run an OWNER turn started — the entries after an
