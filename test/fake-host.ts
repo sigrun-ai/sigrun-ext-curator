@@ -670,8 +670,17 @@ export async function createFakeHost(
 		context: HANDLER_CONTEXT,
 		setCuration: (overrides) => {
 			for (const [key, value] of Object.entries(overrides)) {
+				// Scripted members record like the defaults — `fake.calls` is
+				// the ordered log of EVERY curation call, scripted or not.
+				const scripted =
+					typeof value === "function"
+						? (...args: readonly unknown[]) => {
+								record(`curation.${key}`, ...args);
+								return (value as (...a: readonly unknown[]) => unknown)(...args);
+						}
+						: value;
 				// @ts-expect-error — scriptable-by-design: tests override members.
-				curation[key] = value;
+				curation[key] = scripted;
 			}
 		},
 		pushView: (id, view) => {

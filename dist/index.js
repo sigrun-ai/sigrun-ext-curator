@@ -17,8 +17,9 @@
  * - `jobs` — `curator-tick`, `every: "15m"` (spec §5 pins the interval),
  *   `action: { kind: "task", task: "curator.tick" }` — jobs are the only
  *   time-based scheduler, so loop 2's cadence is a job, never a timer.
- * - `runSettled` — loop 1's decision hook (one call per settled run;
- *   Task B2 implements the enqueue).
+ * - `runSettled` — loop 1's decision hook (Task B2): decides on settle
+ *   and enqueues a review; the review itself runs on the per-user
+ *   queue, never inside the hook deadline.
  * - `commands` — `/learn [focus]`: request a review of this
  *   conversation on demand (Task B5 implements the enqueue; the
  *   scaffold answers honestly that the request was noted).
@@ -33,6 +34,9 @@
  * the host's per-user scoped store — nothing is captured at factory time.
  */
 import { defineExtension, defineTask } from "@earendil-works/pi-durable";
+import { createLoop1 } from "./loop1.js";
+import { Backoff } from "./backoff.js";
+import { ReviewQueue } from "./queue.js";
 /** The durable task kind the tick job fires (TaskRecord.kind). */
 export const CURATOR_TICK_TASK = "curator.tick";
 /** The definition version persisted with the task. */
@@ -121,18 +125,24 @@ export const curatorView = {
 };
 /**
  * The sigrun extension-package factory: builds the curator's declared
- * surface over the host. One factory call, one wiring.
+ * surface over the host. One factory call, one wiring. The constructed
+ * loop-1 state (the review queue, the backoff ladder) is plain memory
+ * the handlers use — no timers, no I/O run here.
  */
 export default function createCurator(host) {
+    const loop1 = createLoop1({
+        host,
+        queue: new ReviewQueue(),
+        backoff: new Backoff(),
+    });
     return {
         extension: defineExtension({
             name: "curator",
             tasks: [createTickTask(host)],
         }),
-        // Loop 1's decision hook (Task B2 decides and enqueues; the
-        // scaffold observes and returns — never work inside the hook
-        // deadline).
-        runSettled: async () => undefined,
+        // Loop 1's decision hook: decide + enqueue + return (the review
+        // runs on the queue; the hook deadline never bounds it).
+        runSettled: loop1.onRunSettled,
         // Loop 2's cadence: the ONLY time-based scheduler (the worker
         // `every` is retired; jobs are the timer).
         jobs: [
@@ -149,3 +159,7 @@ export default function createCurator(host) {
     };
 }
 export { parseCuratorSettings, readSettings, DEFAULT_CURATOR_SETTINGS, } from "./settings.js";
+export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
+export { Backoff } from "./backoff.js";
+export { ReviewQueue, queueDigest } from "./queue.js";
+export { reviewInstruction } from "./prompts.js";

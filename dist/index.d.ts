@@ -17,8 +17,9 @@
  * - `jobs` — `curator-tick`, `every: "15m"` (spec §5 pins the interval),
  *   `action: { kind: "task", task: "curator.tick" }` — jobs are the only
  *   time-based scheduler, so loop 2's cadence is a job, never a timer.
- * - `runSettled` — loop 1's decision hook (one call per settled run;
- *   Task B2 implements the enqueue).
+ * - `runSettled` — loop 1's decision hook (Task B2): decides on settle
+ *   and enqueues a review; the review itself runs on the per-user
+ *   queue, never inside the hook deadline.
  * - `commands` — `/learn [focus]`: request a review of this
  *   conversation on demand (Task B5 implements the enqueue; the
  *   scaffold answers honestly that the request was noted).
@@ -66,8 +67,17 @@ export declare function createLearnCommand(): ExtensionCommandContribution;
 export declare const curatorView: SurfaceDef<"view">;
 /**
  * The sigrun extension-package factory: builds the curator's declared
- * surface over the host. One factory call, one wiring.
+ * surface over the host. One factory call, one wiring. The constructed
+ * loop-1 state (the review queue, the backoff ladder) is plain memory
+ * the handlers use — no timers, no I/O run here.
  */
 export default function createCurator(host: SigrunHost): SigrunExtensionResult;
 export { parseCuratorSettings, readSettings, DEFAULT_CURATOR_SETTINGS, } from "./settings.js";
 export type { CuratorSettings } from "./settings.js";
+export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
+export type { Loop1Deps } from "./loop1.js";
+export { Backoff } from "./backoff.js";
+export { ReviewQueue, queueDigest } from "./queue.js";
+export type { ReviewJob } from "./queue.js";
+export { reviewInstruction } from "./prompts.js";
+export type { ReviewInstructionOpts } from "./prompts.js";

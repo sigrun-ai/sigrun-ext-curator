@@ -1,0 +1,39 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`reviewInstruction > the review instruction contains the do-not-capture list, the routing rule, the hint arguments and exactly the allowed tools 1`] = `
+"You are the curator. Review the conversation above and distill durable lessons for this user.
+Focus: the deploy checklist.
+
+A skill is a procedure for a repeatable class of task, for this user. State pitfalls as a rule plus one clause of why. No incident narration, no dates, no PR numbers, no quoted chatter.
+
+Do NOT capture: environment failures; negative claims about tools; transient errors; unresolved failures presented as workflows; one-off tasks; codebase facts (those belong in the repo's AGENTS.md); secrets; personal facts (those go to the memory target when one is offered). Never store another participant's words.
+
+Each lesson goes in exactly one place: one skill, one overlay, or one target. Update the skill in play before creating one; pick class-level names.
+
+"Nothing to save" is a valid outcome — when nothing qualifies, finish with that sentence and change nothing.
+
+Targets:
+- memory: personal facts go here
+- memory: keep it under budget
+
+The user made these write attempts between reviews — fold their intent in:
+1. memory_write {"file":"user","text":"prefers tabs"} at 2026-11-01T12:00:00.000Z
+
+Your tools: skill_manage, memory_write. Nothing else.
+"
+`;
+
+exports[`reviewInstruction > without hints, targets or focus the instruction still stands alone 1`] = `
+"You are the curator. Review the conversation above and distill durable lessons for this user.
+
+A skill is a procedure for a repeatable class of task, for this user. State pitfalls as a rule plus one clause of why. No incident narration, no dates, no PR numbers, no quoted chatter.
+
+Do NOT capture: environment failures; negative claims about tools; transient errors; unresolved failures presented as workflows; one-off tasks; codebase facts (those belong in the repo's AGENTS.md); secrets; personal facts (those go to the memory target when one is offered). Never store another participant's words.
+
+Each lesson goes in exactly one place: one skill, one overlay, or one target. Update the skill in play before creating one; pick class-level names.
+
+"Nothing to save" is a valid outcome — when nothing qualifies, finish with that sentence and change nothing.
+
+Your tools: skill_manage. Nothing else.
+"
+`;
