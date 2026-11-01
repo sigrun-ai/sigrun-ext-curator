@@ -306,6 +306,45 @@ describe("the curator view", () => {
 		}
 	});
 
+	test("a clearAmbient rejection after a successful undo still lands the undo toast", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const conversation = (await host.conversations.create({
+				owner: ALICE,
+			})) as ConversationId;
+			host.setCuration({
+				undoReview: async () => 2,
+			});
+			// The review set its notice (the ledger remembers the
+			// conversation); the ambient CLEAR then hiccups.
+			await notify(host, conversation, ALICE, {
+				status: "completed",
+				text: "saved",
+				changes: [
+					{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
+				],
+				reviewId: "review-acme",
+			});
+			host.clearAmbient = async () => {
+				throw new Error("ambient seam unavailable");
+			};
+
+			const view = createCuratorView(host);
+			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
+				itemId: "review-acme",
+			});
+
+			// The revert succeeded, so the reply is the undo toast — the
+			// stale notice is cosmetic, never a failed action.
+			expect(result).toEqual({
+				ok: true,
+				toast: "Undid 2 change(s)",
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("the pause switch writes the user's settings; pin and archive/restore write the stores", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
 		try {

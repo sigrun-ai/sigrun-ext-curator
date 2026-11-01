@@ -196,8 +196,14 @@ export function createLoop1(deps) {
             // The review consumed these hints for good — clear their
             // refunded ids so a later settle cannot re-fire on them.
             await clearPendingHints(deps.host, owner, id, hints);
-            // Task B5: announce the changes (no changes → no notice).
-            await notify(deps.host, id, owner, { ...result, reviewId });
+            // Task B5: announce the changes (no changes → no notice). The
+            // notice is isolated: a failing setAmbient or ledger write
+            // degrades to a missing notice — never a thrown body, which the
+            // refund guard would answer with a phantom refund of an
+            // already-applied review (re-reviewing learned material).
+            await notify(deps.host, id, owner, { ...result, reviewId }).catch((error) => {
+                log(`loop 1: notice after the review of conversation ${String(id)} could not be set: ${error instanceof Error ? error.message : String(error)}`);
+            });
         }
         else {
             if (result.status === "failed")

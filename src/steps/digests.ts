@@ -152,10 +152,19 @@ export async function reviewDigest(
 	await clearPendingHints(host, user, conversationId, hints);
 	// Task B5: a digest review that CHANGED something announces itself
 	// on the originating (mixed) conversation — the same notice shape a
-	// fork review sets, undoable from the view.
+	// fork review sets, undoable from the view. The notice is isolated:
+	// a failing setAmbient or ledger write degrades to a missing notice,
+	// never a failed step (the catch above would strand a COMPLETED
+	// review's entry back in the queue as if the run had failed).
 	await notify(host, conversationId, user, {
 		...run.result,
 		reviewId: run.reviewId,
+	}).catch((error: unknown) => {
+		log(
+			`loop 2: ${user} notice after the digest of conversation ${String(conversationId)} could not be set: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
 	});
 	return true;
 }

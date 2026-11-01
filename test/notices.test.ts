@@ -18,6 +18,8 @@
  */
 
 import { describe, expect, test } from "vitest";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type {
 	ConversationId,
 	EntryId,
@@ -25,6 +27,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
+	CurationHint,
 	CurationRunResult,
 	HandlerContext,
 	MemoryEventApi,
@@ -48,6 +51,27 @@ const ALICE = "alice";
 
 /** The inert event API stub — the loops read the host, not the event api. */
 const API = {} as MemoryEventApi;
+
+/** One pending-review hint (the refund-file discriminator). */
+function noticeHint(n: number): CurationHint {
+	return {
+		id: `hint-${n}`,
+		tool: "memory_write",
+		args: { file: "memory" },
+		at: "2026-11-01T12:00:00.000Z",
+	};
+}
+
+/** Read one user's refunded-hints file (absent → rejects ENOENT). */
+async function pendingHintsRaw(
+	host: { stores: { user(user: string): { paths: { state: string } } } },
+	user: string,
+): Promise<string> {
+	return await readFile(
+		join(host.stores.user(user).paths.state, "pending-hints.json"),
+		"utf8",
+	);
+}
 
 /** The shared invocation context (the fake host's own). */
 const CONTEXT: HandlerContext = { abortSignal: undefined };
@@ -348,6 +372,151 @@ describe("the loops fire notify on a changed review", () => {
 			expect(writes).toHaveLength(1);
 			expect(writes[0]?.conversationId).toBe(id);
 			expect((writes[0]?.spec as { key: string }).key).toBe(CURATOR_NOTICE_KIND);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a notice failure never corrupts loop 1's completed review: no refund, no backoff, no error log", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
+			const queue = new ReviewQueue();
+			const backoff = new Backoff();
+			const logs: string[] = [];
+			const loop = createLoop1({
+				host,
+				queue,
+				backoff,
+				log: (message) => logs.push(message),
+			});
+			const event: RunSettledEvent = {
+				conversationId: id,
+				owner: ALICE,
+				inputs: [1 as SubmissionId],
+				inputTexts: ["acme deploy notes"],
+				outcome: {
+					status: "answered",
+					answerEntryId: 7 as EntryId,
+					answer: answerMessage(),
+				},
+			};
+
+			// The review COMPLETES with changes after consuming a hint; the
+			// notice write then rejects (the ambient seam hiccuping).
+			host.setCuration({
+				takeHints: async () => [noticeHint(1)],
+				forkReview: async () =>
+					reviewed([
+						{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
+					]),
+			});
+			host.setAmbient = async () => {
+				throw new Error("ambient seam unavailable");
+			};
+
+			await loop.onRunSettled(event, API, CONTEXT);
+			await queue.idle();
+
+			// (a) No phantom refund: the review completed, so its consumed
+			// hint is gone for good — the pending-hints file was never
+			// written (the buggy path refunds an already-applied review).
+			await expect(pendingHintsRaw(host, ALICE)).rejects.toMatchObject({
+				code: "ENOENT",
+			});
+			// (b) No backoff step: a later settle at the SAME instant runs a
+			// review immediately (a blocked user would skip takeHints).
+			host.setCuration({
+				takeHints: async () => [noticeHint(2)],
+				forkReview: async () => reviewed([]),
+			});
+			await loop.onRunSettled(event, API, CONTEXT);
+			await queue.idle();
+			expect(
+				host.calls.filter((call) => call.method === "curation.takeHints").length,
+			).toBe(2);
+			// (c) The completion stood: exactly two reviews ran, and neither
+			// was logged as a failed review (the notice failure may log a
+			// notice line — never the phantom "review ... failed" one).
+			expect(
+				host.calls.filter((call) => call.method === "curation.forkReview").length,
+			).toBe(2);
+			expect(logs.some((line) => /review of conversation .+ failed/.test(line))).toBe(
+				false,
+			);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a notice failure never fails loop 2's digest step (the entry is still consumed)", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
+			await queueDigest(host, ALICE, id);
+			host.setCuration({
+				targets: async () => [],
+				eligibility: async () => ({
+					owner: ALICE,
+					internal: false,
+					ownerOnly: false,
+					unattributed: 0,
+				}),
+				digestRun: async () =>
+					reviewed([
+						{ changeId: "chg-1", summary: "noted the acme port quirk", target: "memory:markdown" },
+					]),
+			});
+			host.setAmbient = async () => {
+				throw new Error("ambient seam unavailable");
+			};
+
+			const budget: RunBudget = { left: () => 12, spend: async () => true };
+			const logs: string[] = [];
+			const deps: ModelStepDeps = {
+				host,
+				user: ALICE,
+				now: () => new Date("2026-11-01T12:00:00.000Z"),
+				deadlineAt:
+					Date.parse("2026-11-01T12:00:00.000Z") + LOOP2_TICK_DEADLINE_MS,
+				budget,
+				log: (message) => logs.push(message),
+			};
+			const work = digestsStep(deps);
+			const push = async () => {
+				for (let i = 0; i < 50; i += 1) {
+					if (host.calls.some((call) => call.method === "conversations.watch")) break;
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				host.pushView(id, {
+					conversation: { id },
+					entries: [
+						{ id: 10, kind: "pi.user", model: [{ role: "user", content: "acme advice" }] },
+					],
+					docs: { "sigrun.authors": { byEntry: { "10": ALICE } } },
+					steer: { busy: false, queued: 0 },
+				} as never);
+			};
+			await push();
+			await work;
+
+			// The step reported success: no phantom "digest ... failed"
+			// error log (the notice failure may log a notice line), and
+			// the completed entry was consumed despite the notice failure —
+			// a notice degrades to a missing notice, never a failed step.
+			expect(
+				logs.some((line) => /digest of conversation .+ failed/.test(line)),
+			).toBe(false);
+			expect(logs.some((line) => line.includes("ambient seam unavailable"))).toBe(
+				true,
+			);
+			const queueFile = JSON.parse(
+				await readFile(
+					join(host.stores.user(ALICE).paths.state, "digest-queue.json"),
+					"utf8",
+				),
+			) as { conversations: unknown[] };
+			expect(queueFile.conversations).toEqual([]);
 		} finally {
 			await host.close();
 		}

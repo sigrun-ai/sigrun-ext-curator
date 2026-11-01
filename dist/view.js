@@ -208,7 +208,10 @@ export function createCuratorView(host) {
                 // one (a digest review with no notice clears nothing).
                 const notice = (await readNotices(host, who.user)).find((entry) => entry.reviewId === reviewId);
                 if (notice !== undefined) {
-                    await host.clearAmbient(notice.conversationId, CURATOR_NOTICE_KIND, CONTEXT);
+                    // The revert already succeeded — a failing clear only leaves a
+                    // stale notice (replaced by the next review's), so it must
+                    // never turn the undo into a failed action with no toast.
+                    await host.clearAmbient(notice.conversationId, CURATOR_NOTICE_KIND, CONTEXT).catch(() => undefined);
                 }
                 return {
                     ok: true,
