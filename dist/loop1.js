@@ -41,6 +41,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { notify } from "./notices.js";
+import { enqueueLearn } from "./learn.js";
 import { reviewInstruction } from "./prompts.js";
 import { clearPendingHints, mergeHints, pendingHintsFor, queueDigest, readStateJson, refundHints, writeStateJson, } from "./queue.js";
 import { readSettings } from "./settings.js";
@@ -51,7 +53,8 @@ export const LOOP1_MAX_TOOL_CALLS = 8;
 export const LOOP1_MAX_OUTPUT_TOKENS = 2048;
 export const LOOP1_DEADLINE_MS = 120_000;
 /**
- * Create loop 1: the `runSettled` handler the factory wires. The
+ * Create loop 1: the `runSettled` handler the factory wires, and the
+ * `learnNow` seam `/learn` runs the same review path through. The
  * handler owns only the decision; the queue owns the review.
  */
 export function createLoop1(deps) {
@@ -120,15 +123,15 @@ export function createLoop1(deps) {
         }
         deps.queue.enqueue({
             user: owner,
-            work: () => runForkReview(owner, id, hints, newestEntry).catch((error) => {
+            work: () => runForkReview(owner, id, hints, newestEntry, undefined, `review-${randomUUID()}`).catch((error) => {
                 log(`loop 1: review of conversation ${String(id)} failed: ${error instanceof Error ? error.message : String(error)}`);
             }),
         });
     }
     /** The review body (queue-owned; never on the handler's stack). */
-    async function runForkReview(owner, id, hints, newestEntry) {
+    async function runForkReview(owner, id, hints, newestEntry, focus, reviewId) {
         try {
-            await reviewBody(owner, id, hints, newestEntry);
+            await reviewBody(owner, id, hints, newestEntry, focus, reviewId);
         }
         catch (error) {
             // The body threw before any outcome was recorded (a host read,
@@ -141,7 +144,7 @@ export function createLoop1(deps) {
         }
     }
     /** The review proper, factored out of {@link runForkReview}'s refund guard. */
-    async function reviewBody(owner, id, hints, newestEntry) {
+    async function reviewBody(owner, id, hints, newestEntry, focus, reviewId) {
         const targets = await deps.host.curation.targets(owner, id);
         const selection = await deps.host.curation.tools(id);
         const allow = [
@@ -158,6 +161,7 @@ export function createLoop1(deps) {
                 guidance: [...target.guidance],
             })),
             allow,
+            ...(focus === undefined ? {} : { focus }),
         });
         // The parent abort: any activity on the parent while the review
         // runs fires the signal — the review reviews the conversation it
@@ -174,7 +178,7 @@ export function createLoop1(deps) {
                 maxToolCalls: LOOP1_MAX_TOOL_CALLS,
                 maxOutputTokens: LOOP1_MAX_OUTPUT_TOKENS,
                 deadlineMs: LOOP1_DEADLINE_MS,
-                reviewId: `review-${randomUUID()}`,
+                reviewId,
                 signal: abort.signal,
             });
         }
@@ -192,6 +196,8 @@ export function createLoop1(deps) {
             // The review consumed these hints for good — clear their
             // refunded ids so a later settle cannot re-fire on them.
             await clearPendingHints(deps.host, owner, id, hints);
+            // Task B5: announce the changes (no changes → no notice).
+            await notify(deps.host, id, owner, { ...result, reviewId });
         }
         else {
             if (result.status === "failed")
@@ -203,7 +209,15 @@ export function createLoop1(deps) {
             await refundHints(deps.host, owner, id, hints);
         }
     }
-    return { onRunSettled };
+    /** `/learn`'s seam (Task B5): the same review path minus the
+     *  threshold gate — eligibility still decides, and a mixed
+     *  conversation goes to the digest queue with the mixed-conversation
+     *  notice. The paused/enabled gates deliberately do NOT apply: the
+     *  vacation switch stops the loops, not the user's explicit ask. */
+    const learnNow = (conversationId, user, focus) => enqueueLearn(deps.host, deps.queue, conversationId, user, focus, (owner, id, hints, newestEntry, reviewFocus) => runForkReview(owner, id, hints, newestEntry, reviewFocus, `learn-${randomUUID()}`).catch((error) => {
+        log(`loop 1: /learn review of conversation ${String(id)} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }));
+    return { onRunSettled, learnNow };
 }
 /** Read the per-user cursors file (absent or malformed → empty). */
 async function readCursors(host, user) {

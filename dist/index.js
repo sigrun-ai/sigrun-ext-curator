@@ -20,15 +20,15 @@
  * - `runSettled` — loop 1's decision hook (Task B2): decides on settle
  *   and enqueues a review; the review itself runs on the per-user
  *   queue, never inside the hook deadline.
- * - `commands` — `/learn [focus]`: request a review of this
- *   conversation on demand (Task B5 implements the enqueue; the
- *   scaffold answers honestly that the request was noted).
+ * - `commands` — `/learn [focus]`: enqueue a loop 1 review of this
+ *   conversation now, bypassing the threshold but not eligibility
+ *   (Task B5).
  * - `ambientKinds` / `interactionKinds` — the seam's write-gate
  *   declarations: `curator.notice` (the post-review ambient notice) and
  *   `curator.overlay-question` (the unsure-overlay question).
- * - `surfaces` — the curator view (learned skills, overlays, the feed
- *   with per-review undo, the pause switch; Task B5 implements the
- *   rendering).
+ * - `surfaces` — the curator view: learned skills (pin,
+ *   archive/restore), overlays, the feed grouped by review with undo,
+ *   and the pause switch (Task B5).
  *
  * Per-user settings (`src/settings.ts`) are read live per event through
  * the host's per-user scoped store — nothing is captured at factory time.
@@ -36,6 +36,8 @@
 import { defineExtension, defineTask } from "@earendil-works/pi-durable";
 import { createLoop1 } from "./loop1.js";
 import { createLoop2 } from "./loop2.js";
+import { createLearnCommand } from "./learn.js";
+import { createCuratorView } from "./view.js";
 import { Backoff } from "./backoff.js";
 import { ReviewQueue } from "./queue.js";
 import { overlayQuestionHandler } from "./steps/overlays.js";
@@ -79,54 +81,8 @@ export function createTickTask(host) {
         },
     });
 }
-/**
- * `/learn [focus]` (Task B5 enqueues a review bypassing the threshold
- * but not eligibility; the scaffold notes the request). The command
- * runs with the invoking principal — its `user` is the owner the
- * review would learn for.
- */
-export function createLearnCommand() {
-    return {
-        name: "learn",
-        description: "Ask the curator to review this conversation now",
-        args: "[focus]",
-        run: async (ctx) => ({
-            notice: ctx.args.length > 0
-                ? `Curator review requested (focus: ${ctx.args}).`
-                : "Curator review requested.",
-        }),
-    };
-}
-/**
- * The curator view (Task B5 renders skills, overlays, the feed and the
- * undo/pause actions; the scaffold declares the surface with its
- * placement so the id is claimable from day one).
- */
-export const curatorView = {
-    id: "curator",
-    title: "Curator",
-    icon: "book",
-    placement: "view",
-    render: async (ctx) => ({
-        tree: {
-            v: 1,
-            root: {
-                type: "page",
-                title: "Curator",
-                main: [
-                    {
-                        type: "markdown",
-                        text: ctx.principal.user === undefined
-                            ? "Sign in to see your curator activity."
-                            : `Curator activity for ${ctx.principal.user}.`,
-                    },
-                ],
-            },
-        },
-        data: {},
-        access: ctx.principal.user === undefined ? "none" : "read",
-    }),
-};
+export { createLearnCommand } from "./learn.js";
+export { createCuratorView, viewAccess, groupFeed, VIEW_FEED_LIMIT } from "./view.js";
 /**
  * The sigrun extension-package factory: builds the curator's declared
  * surface over the host. One factory call, one wiring. The constructed
@@ -164,14 +120,16 @@ export default function createCurator(host) {
                 action: { kind: "task", task: CURATOR_TICK_TASK },
             },
         ],
-        commands: [createLearnCommand()],
+        commands: [createLearnCommand(host, loop1.learnNow)],
         ambientKinds: [CURATOR_NOTICE_KIND],
         interactionKinds: [CURATOR_OVERLAY_QUESTION_KIND],
-        surfaces: { views: [curatorView] },
+        surfaces: { views: [createCuratorView(host)] },
     };
 }
 export { parseCuratorSettings, readSettings, DEFAULT_CURATOR_SETTINGS, } from "./settings.js";
+export { notify, readNotices } from "./notices.js";
 export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
+export { enqueueLearn, learnReviewId } from "./learn.js";
 export { createLoop2, eligibleUsers, tick, IDLE_THRESHOLD_MS, LOOP2_TICK_DEADLINE_MS, FIRST_RUN_GRACE_MS, FULL_PASS_INTERVAL_MS, PASS_FILE, PASS_STEPS, FIRST_TICK_FILE, } from "./loop2.js";
 export { archiveUnused, ARCHIVE_UNUSED_DAYS, ARCHIVE_UNUSED_MS, } from "./steps/archive.js";
 export { detectOverlayDrift, OverlayRecheckQueue, RECHECK_QUEUE_FILE, recheckOverlays, overlayQuestionHandler, } from "./steps/overlays.js";

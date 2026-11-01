@@ -39,8 +39,10 @@
  * its hints to `pending-hints.json`, so a consumed-but-unreviewed
  * hint survives until some review completes with it in hand.
  */
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type { ExtensionRunSettledHandler, SigrunHost } from "@sigrun/sigrun/extension";
 import { Backoff } from "./backoff.js";
+import { type LearnOutcome } from "./learn.js";
 /** The per-conversation cursor file under the user's state dir. */
 export declare const CURSORS_FILE = "cursors.json";
 /** The fork-review bounds (spec §6.2: a handful of calls, small output, ~2 minutes). */
@@ -65,9 +67,11 @@ export interface Loop1Deps {
     readonly log?: (message: string) => void;
 }
 /**
- * Create loop 1: the `runSettled` handler the factory wires. The
+ * Create loop 1: the `runSettled` handler the factory wires, and the
+ * `learnNow` seam `/learn` runs the same review path through. The
  * handler owns only the decision; the queue owns the review.
  */
 export declare function createLoop1(deps: Loop1Deps): {
     readonly onRunSettled: ExtensionRunSettledHandler;
+    readonly learnNow: (conversationId: ConversationId, user: string, focus: string | undefined) => Promise<LearnOutcome>;
 };

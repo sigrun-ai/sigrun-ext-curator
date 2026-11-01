@@ -20,15 +20,15 @@
  * - `runSettled` — loop 1's decision hook (Task B2): decides on settle
  *   and enqueues a review; the review itself runs on the per-user
  *   queue, never inside the hook deadline.
- * - `commands` — `/learn [focus]`: request a review of this
- *   conversation on demand (Task B5 implements the enqueue; the
- *   scaffold answers honestly that the request was noted).
+ * - `commands` — `/learn [focus]`: enqueue a loop 1 review of this
+ *   conversation now, bypassing the threshold but not eligibility
+ *   (Task B5).
  * - `ambientKinds` / `interactionKinds` — the seam's write-gate
  *   declarations: `curator.notice` (the post-review ambient notice) and
  *   `curator.overlay-question` (the unsure-overlay question).
- * - `surfaces` — the curator view (learned skills, overlays, the feed
- *   with per-review undo, the pause switch; Task B5 implements the
- *   rendering).
+ * - `surfaces` — the curator view: learned skills (pin,
+ *   archive/restore), overlays, the feed grouped by review with undo,
+ *   and the pause switch (Task B5).
  *
  * Per-user settings (`src/settings.ts`) are read live per event through
  * the host's per-user scoped store — nothing is captured at factory time.
@@ -37,13 +37,13 @@
 import { defineExtension, defineTask } from "@earendil-works/pi-durable";
 import type { AnyTask } from "@earendil-works/pi-durable";
 import type {
-	ExtensionCommandContribution,
 	SigrunExtensionResult,
 	SigrunHost,
-	SurfaceDef,
 } from "@sigrun/sigrun/extension";
 import { createLoop1 } from "./loop1.js";
 import { createLoop2 } from "./loop2.js";
+import { createLearnCommand } from "./learn.js";
+import { createCuratorView } from "./view.js";
 import { Backoff } from "./backoff.js";
 import { ReviewQueue } from "./queue.js";
 import { overlayQuestionHandler } from "./steps/overlays.js";
@@ -96,57 +96,11 @@ export function createTickTask(host: SigrunHost): AnyTask {
 	});
 }
 
-/**
- * `/learn [focus]` (Task B5 enqueues a review bypassing the threshold
- * but not eligibility; the scaffold notes the request). The command
- * runs with the invoking principal — its `user` is the owner the
- * review would learn for.
- */
-export function createLearnCommand(): ExtensionCommandContribution {
-	return {
-		name: "learn",
-		description: "Ask the curator to review this conversation now",
-		args: "[focus]",
-		run: async (ctx) => ({
-			notice:
-				ctx.args.length > 0
-					? `Curator review requested (focus: ${ctx.args}).`
-					: "Curator review requested.",
-		}),
-	};
-}
+export { createLearnCommand } from "./learn.js";
+export type { LearnNow, LearnOutcome } from "./learn.js";
 
-/**
- * The curator view (Task B5 renders skills, overlays, the feed and the
- * undo/pause actions; the scaffold declares the surface with its
- * placement so the id is claimable from day one).
- */
-export const curatorView: SurfaceDef<"view"> = {
-	id: "curator",
-	title: "Curator",
-	icon: "book",
-	placement: "view",
-	render: async (ctx) => ({
-		tree: {
-			v: 1,
-			root: {
-				type: "page",
-				title: "Curator",
-				main: [
-					{
-						type: "markdown",
-						text:
-							ctx.principal.user === undefined
-								? "Sign in to see your curator activity."
-								: `Curator activity for ${ctx.principal.user}.`,
-					},
-				],
-			},
-		},
-		data: {},
-		access: ctx.principal.user === undefined ? "none" : "read",
-	}),
-};
+export { createCuratorView, viewAccess, groupFeed, VIEW_FEED_LIMIT } from "./view.js";
+export type { CuratorViewData } from "./view.js";
 
 /**
  * The sigrun extension-package factory: builds the curator's declared
@@ -187,10 +141,10 @@ export default function createCurator(
 				action: { kind: "task", task: CURATOR_TICK_TASK },
 			},
 		],
-		commands: [createLearnCommand()],
+		commands: [createLearnCommand(host, loop1.learnNow)],
 		ambientKinds: [CURATOR_NOTICE_KIND],
 		interactionKinds: [CURATOR_OVERLAY_QUESTION_KIND],
-		surfaces: { views: [curatorView] },
+		surfaces: { views: [createCuratorView(host)] },
 	};
 }
 
@@ -199,6 +153,8 @@ export {
 	readSettings,
 	DEFAULT_CURATOR_SETTINGS,
 } from "./settings.js";
+export { notify, readNotices } from "./notices.js";
+export type { NoticeRecord } from "./notices.js";
 export type { CuratorSettings } from "./settings.js";
 export {
 	createLoop1,
@@ -208,6 +164,7 @@ export {
 	LOOP1_DEADLINE_MS,
 } from "./loop1.js";
 export type { Loop1Deps } from "./loop1.js";
+export { enqueueLearn, learnReviewId } from "./learn.js";
 export {
 	createLoop2,
 	eligibleUsers,

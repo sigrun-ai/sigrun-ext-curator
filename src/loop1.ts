@@ -51,6 +51,8 @@ import type {
 	SigrunHost,
 } from "@sigrun/sigrun/extension";
 import { Backoff } from "./backoff.js";
+import { notify } from "./notices.js";
+import { enqueueLearn, type LearnOutcome } from "./learn.js";
 import { reviewInstruction } from "./prompts.js";
 import {
 	clearPendingHints,
@@ -95,11 +97,17 @@ interface CursorsFile {
 }
 
 /**
- * Create loop 1: the `runSettled` handler the factory wires. The
+ * Create loop 1: the `runSettled` handler the factory wires, and the
+ * `learnNow` seam `/learn` runs the same review path through. The
  * handler owns only the decision; the queue owns the review.
  */
 export function createLoop1(deps: Loop1Deps): {
 	readonly onRunSettled: ExtensionRunSettledHandler;
+	readonly learnNow: (
+		conversationId: ConversationId,
+		user: string,
+		focus: string | undefined,
+	) => Promise<LearnOutcome>;
 } {
 	const now = deps.now ?? (() => new Date());
 	const log =
@@ -181,7 +189,7 @@ export function createLoop1(deps: Loop1Deps): {
 		deps.queue.enqueue({
 			user: owner,
 			work: () =>
-				runForkReview(owner, id, hints, newestEntry).catch((error: unknown) => {
+				runForkReview(owner, id, hints, newestEntry, undefined, `review-${randomUUID()}`).catch((error: unknown) => {
 					log(
 						`loop 1: review of conversation ${String(id)} failed: ${
 							error instanceof Error ? error.message : String(error)
@@ -197,9 +205,11 @@ export function createLoop1(deps: Loop1Deps): {
 		id: ConversationId,
 		hints: readonly CurationHint[],
 		newestEntry: EntryId | undefined,
+		focus: string | undefined,
+		reviewId: string,
 	): Promise<void> {
 		try {
-			await reviewBody(owner, id, hints, newestEntry);
+			await reviewBody(owner, id, hints, newestEntry, focus, reviewId);
 		} catch (error) {
 			// The body threw before any outcome was recorded (a host read,
 			// the watch, the run itself): the hints were no more consumed
@@ -217,6 +227,8 @@ export function createLoop1(deps: Loop1Deps): {
 		id: ConversationId,
 		hints: readonly CurationHint[],
 		newestEntry: EntryId | undefined,
+		focus: string | undefined,
+		reviewId: string,
 	): Promise<void> {
 		const targets = await deps.host.curation.targets(owner, id);
 		const selection = await deps.host.curation.tools(id);
@@ -234,6 +246,7 @@ export function createLoop1(deps: Loop1Deps): {
 				guidance: [...target.guidance],
 			})),
 			allow,
+			...(focus === undefined ? {} : { focus }),
 		});
 
 		// The parent abort: any activity on the parent while the review
@@ -251,7 +264,7 @@ export function createLoop1(deps: Loop1Deps): {
 				maxToolCalls: LOOP1_MAX_TOOL_CALLS,
 				maxOutputTokens: LOOP1_MAX_OUTPUT_TOKENS,
 				deadlineMs: LOOP1_DEADLINE_MS,
-				reviewId: `review-${randomUUID()}`,
+				reviewId,
 				signal: abort.signal,
 			});
 		} finally {
@@ -269,6 +282,8 @@ export function createLoop1(deps: Loop1Deps): {
 			// The review consumed these hints for good — clear their
 			// refunded ids so a later settle cannot re-fire on them.
 			await clearPendingHints(deps.host, owner, id, hints);
+			// Task B5: announce the changes (no changes → no notice).
+			await notify(deps.host, id, owner, { ...result, reviewId });
 		} else {
 			if (result.status === "failed") deps.backoff.failure(owner, now());
 			// No review happened for these hints (provider failure, the
@@ -279,7 +294,40 @@ export function createLoop1(deps: Loop1Deps): {
 		}
 	}
 
-	return { onRunSettled };
+	/** `/learn`'s seam (Task B5): the same review path minus the
+	 *  threshold gate — eligibility still decides, and a mixed
+	 *  conversation goes to the digest queue with the mixed-conversation
+	 *  notice. The paused/enabled gates deliberately do NOT apply: the
+	 *  vacation switch stops the loops, not the user's explicit ask. */
+	const learnNow = (
+		conversationId: ConversationId,
+		user: string,
+		focus: string | undefined,
+	): Promise<LearnOutcome> =>
+		enqueueLearn(
+			deps.host,
+			deps.queue,
+			conversationId,
+			user,
+			focus,
+			(owner, id, hints, newestEntry, reviewFocus) =>
+				runForkReview(
+					owner,
+					id,
+					hints,
+					newestEntry,
+					reviewFocus,
+					`learn-${randomUUID()}`,
+				).catch((error: unknown) => {
+					log(
+						`loop 1: /learn review of conversation ${String(id)} failed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}),
+		);
+
+	return { onRunSettled, learnNow };
 }
 
 /** Read the per-user cursors file (absent or malformed → empty). */

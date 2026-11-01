@@ -48,6 +48,7 @@ import {
 	readDigestQueue,
 	removeDigestEntry,
 } from "../queue.js";
+import { notify } from "../notices.js";
 import { reviewInstruction } from "../prompts.js";
 import { digestRunWithBudget, stepLog, type ModelStepDeps } from "./run.js";
 
@@ -149,6 +150,13 @@ export async function reviewDigest(
 	// the refund file drains of the same ids.
 	await removeDigestEntry(deps.host, user, conversationId);
 	await clearPendingHints(host, user, conversationId, hints);
+	// Task B5: a digest review that CHANGED something announces itself
+	// on the originating (mixed) conversation — the same notice shape a
+	// fork review sets, undoable from the view.
+	await notify(host, conversationId, user, {
+		...run.result,
+		reviewId: run.reviewId,
+	});
 	return true;
 }
 

@@ -38,6 +38,7 @@
  * (`pending-hints.json`), and completing the review drains both.
  */
 import { clearPendingHints, mergeHints, pendingHintsFor, readDigestQueue, removeDigestEntry, } from "../queue.js";
+import { notify } from "../notices.js";
 import { reviewInstruction } from "../prompts.js";
 import { digestRunWithBudget, stepLog } from "./run.js";
 /** The digest step's own view-acquisition grace: how long to wait for
@@ -121,6 +122,13 @@ export async function reviewDigest(deps, conversationId) {
     // the refund file drains of the same ids.
     await removeDigestEntry(deps.host, user, conversationId);
     await clearPendingHints(host, user, conversationId, hints);
+    // Task B5: a digest review that CHANGED something announces itself
+    // on the originating (mixed) conversation — the same notice shape a
+    // fork review sets, undoable from the view.
+    await notify(host, conversationId, user, {
+        ...run.result,
+        reviewId: run.reviewId,
+    });
     return true;
 }
 /**

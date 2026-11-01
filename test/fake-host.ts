@@ -457,7 +457,7 @@ export async function createFakeHost(
 			return interactions.get(`${conversationId}:${callId}`);
 		},
 		setAmbient: async (conversationId, spec) => {
-			record("setAmbient", conversationId, spec.key);
+			record("setAmbient", conversationId, spec);
 		},
 		clearAmbient: async (conversationId, key) => {
 			record("clearAmbient", conversationId, key);
