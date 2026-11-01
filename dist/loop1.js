@@ -15,18 +15,18 @@
  * 2. an internal conversation returns (the bus already withholds
  *    internal settles; this read-side gate is the belt);
  * 3. `eligibility.ownerOnly && unattributed === 0` → the fork path:
- *    take the hints (read-and-clear), count
- *    `modelCallsSince(id, lastReviewedEntry)`, and review when hints
- *    are pending (answered or not — an aborted run's hints stay
- *    pending until the next settle) or the run answered at/over the
- *    threshold;
+ *    take the hints (read-and-clear) merged with any refunded batch
+ *    (`pending-hints.json` — hints a previous review consumed but
+ *    never reviewed), count `modelCallsSince(id, lastReviewedEntry)`,
+ *    and review when hints are pending (answered or not — an aborted
+ *    run's hints stay pending until the next settle) or the run
+ *    answered at/over the threshold;
  * 4. anything else (mixed authorship, unattributed entries) → the
  *    threshold trigger alone queues a `queueDigest` entry: never
- *    forked, handed to loop 2 (Task B4). (Hints are NOT taken on
- *    this branch — `takeHints` is read-and-clear and the digest run
- *    is their consumer, so they stay pending until Task B4 takes
- *    them; a destructively-taken hint with no consumer would be
- *    dropped.)
+ *    forked, handed to loop 2 (Task B4). (Hints ride in that durable
+ *    entry — taken read-and-clear and folded into the digest run's
+ *    instruction by Task B4 — and the refund file drains into it, so
+ *    no hint can wait on both.)
  *
  * The review itself: the allow-list is `skill_manage` + the served
  * targets' tools + `read` when the parent's selection carries it; the
@@ -34,12 +34,15 @@
  * a watch on the parent aborts the run's signal the moment the parent
  * moves. Success anchors the per-conversation cursor
  * (`cursors.json`) at the eligibility snapshot's newest entry; a
- * failed run steps that user's backoff ladder.
+ * failed run steps that user's backoff ladder; any NON-completed
+ * outcome (failed, cancelled, deadline — or a thrown review) refunds
+ * its hints to `pending-hints.json`, so a consumed-but-unreviewed
+ * hint survives until some review completes with it in hand.
  */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { reviewInstruction } from "./prompts.js";
-import { queueDigest, readStateJson, writeStateJson } from "./queue.js";
+import { clearPendingHints, mergeHints, pendingHintsFor, queueDigest, readStateJson, refundHints, writeStateJson, } from "./queue.js";
 import { readSettings } from "./settings.js";
 /** The per-conversation cursor file under the user's state dir. */
 export const CURSORS_FILE = "cursors.json";
@@ -78,7 +81,7 @@ export function createLoop1(deps) {
             // or an answered run at/over the threshold (the cursor never
             // advances on this branch, so that is "ever" — what a backlog
             // wants).
-            const hints = await deps.host.curation.takeHints(id);
+            const hints = mergeHints(await pendingHintsFor(deps.host, owner, id), await deps.host.curation.takeHints(id));
             if (hints.length === 0) {
                 if (event.outcome.status !== "answered")
                     return;
@@ -88,6 +91,12 @@ export function createLoop1(deps) {
                     return;
             }
             await queueDigest(deps.host, owner, id, hints);
+            // The digest entry is durable and owns these ids now — drain the
+            // refund file so a later owner-only settle cannot re-fire them.
+            // After the write, never before: a crash in between duplicates a
+            // hint into two durable places (queueDigest dedups by id), it
+            // never drops one.
+            await clearPendingHints(deps.host, owner, id, hints);
         }
     };
     /**
@@ -95,10 +104,12 @@ export function createLoop1(deps) {
      * fire; otherwise the run must have answered at/over the threshold.
      */
     async function enqueueForkReview(owner, id, event, newestEntry, threshold) {
-        // Hints first (read-and-clear): a review triggered by them always
-        // runs, so a taken hint is never dropped; when there are none,
-        // only the threshold can fire and nothing was consumed.
-        const hints = await deps.host.curation.takeHints(id);
+        // Hints first (read-and-clear), merged with anything a previous
+        // non-completed review refunded for this conversation (dedup by
+        // hint id): a hint stays pending across failures until some
+        // review actually completes with it in hand. When the merged set
+        // is empty, only the threshold can fire and nothing was consumed.
+        const hints = mergeHints(await pendingHintsFor(deps.host, owner, id), await deps.host.curation.takeHints(id));
         if (hints.length === 0) {
             if (event.outcome.status !== "answered")
                 return;
@@ -116,6 +127,21 @@ export function createLoop1(deps) {
     }
     /** The review body (queue-owned; never on the handler's stack). */
     async function runForkReview(owner, id, hints, newestEntry) {
+        try {
+            await reviewBody(owner, id, hints, newestEntry);
+        }
+        catch (error) {
+            // The body threw before any outcome was recorded (a host read,
+            // the watch, the run itself): the hints were no more consumed
+            // than the run was — refund them, then let the queue's logger
+            // have the error. A refund that itself fails must not mask the
+            // original error.
+            await refundHints(deps.host, owner, id, hints).catch(() => undefined);
+            throw error;
+        }
+    }
+    /** The review proper, factored out of {@link runForkReview}'s refund guard. */
+    async function reviewBody(owner, id, hints, newestEntry) {
         const targets = await deps.host.curation.targets(owner, id);
         const selection = await deps.host.curation.tools(id);
         const allow = [
@@ -163,12 +189,19 @@ export function createLoop1(deps) {
             if (newestEntry !== undefined) {
                 await writeCursor(deps.host, owner, id, newestEntry);
             }
+            // The review consumed these hints for good — clear their
+            // refunded ids so a later settle cannot re-fire on them.
+            await clearPendingHints(deps.host, owner, id, hints);
         }
-        else if (result.status === "failed") {
-            deps.backoff.failure(owner, now());
+        else {
+            if (result.status === "failed")
+                deps.backoff.failure(owner, now());
+            // No review happened for these hints (provider failure, the
+            // parent moving, or the deadline): refund them — the host was
+            // cleared at decision time, so the refund file is the only
+            // place they survive; the next settle merges them back in.
+            await refundHints(deps.host, owner, id, hints);
         }
-        // cancelled (the parent moved) and deadline land nothing: the
-        // next settle re-evaluates from the same cursor.
     }
     return { onRunSettled };
 }

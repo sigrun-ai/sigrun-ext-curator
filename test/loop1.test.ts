@@ -110,6 +110,13 @@ const FAILED: CurationRunResult = {
 	error: "upstream 502",
 };
 
+/** A cancelled review result (the parent moved mid-review). */
+const CANCELLED: CurationRunResult = {
+	status: "cancelled",
+	text: "",
+	changes: [],
+};
+
 /** One pending-review hint. */
 function hint(n: number): CurationHint {
 	return {
@@ -453,6 +460,96 @@ describe("loop 1: the fork-review decision", () => {
 			await fire(loop, host, answered(id));
 			await queue.idle();
 			expect(calls).toBe(5); // no block after a reset
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a failed review refunds its hints; the next settle re-fires from the refund and completion clears it", async () => {
+		const base = new Date("2026-11-01T12:00:00.000Z");
+		const at = (minutes: number): Date =>
+			new Date(base.getTime() + minutes * 60_000);
+		let clock = base;
+		const { host, id, queue, loop } = await setup({ now: () => clock });
+		try {
+			const instructions: string[] = [];
+			host.setCuration({
+				// The host holds the hint once: the first take clears it and
+				// every later take finds an empty host — only the refund can
+				// bring the hint back.
+				takeHints: async () => (instructions.length === 0 ? [hint(1)] : []),
+				forkReview: async (_id, opts) => {
+					instructions.push(opts.instruction);
+					return instructions.length === 1 ? FAILED : COMPLETED;
+				},
+			});
+
+			// Hints fire the review; the provider fails it.
+			await fire(loop, host, answered(id));
+			await queue.idle();
+			expect(curationCalls(host.calls, "forkReview")).toBe(1);
+			// The failed review refunded its consumed hint.
+			expect(await readState(host, "pending-hints.json")).toEqual([
+				{ conversationId: id, hints: [hint(1)] },
+			]);
+
+			// After the backoff window the next settle re-fires from the
+			// refund alone: the host is empty and modelCallsSince sits at
+			// 0, below threshold — without the merge nothing would run.
+			clock = at(16);
+			await fire(loop, host, answered(id));
+			await queue.idle();
+			expect(curationCalls(host.calls, "forkReview")).toBe(2);
+			expect(instructions[1]).toContain('memory_write {"file":"memory"}');
+			// The completed review consumed the hint for good.
+			expect(await readState(host, "pending-hints.json")).toEqual([]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a cancelled review (the parent moved) refunds its hints too", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			host.setCuration({
+				takeHints: async () => [hint(2)],
+				forkReview: async () => CANCELLED,
+			});
+			await fire(loop, host, unanswered(id));
+			await queue.idle();
+
+			expect(curationCalls(host.calls, "forkReview")).toBe(1);
+			expect(await readState(host, "pending-hints.json")).toEqual([
+				{ conversationId: id, hints: [hint(2)] },
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a completing review consumes only its own hints — a concurrent review's refund survives", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			// Two settles enqueue two reviews back-to-back (the queue is
+			// FIFO per user; both decisions ran before either review). Each
+			// settle carries its own fresh hint.
+			const batches = [[hint(1)], [hint(2)]];
+			let results = [FAILED, COMPLETED];
+			host.setCuration({
+				takeHints: async () => batches.shift() ?? [],
+				forkReview: async () => results.shift() ?? COMPLETED,
+			});
+
+			await fire(loop, host, answered(id));
+			await fire(loop, host, answered(id));
+			await queue.idle();
+
+			// R1 failed and refunded hint-1; R2 completed with hint-2 — its
+			// completion must not swallow the other review's refund.
+			expect(curationCalls(host.calls, "forkReview")).toBe(2);
+			expect(await readState(host, "pending-hints.json")).toEqual([
+				{ conversationId: id, hints: [hint(1)] },
+			]);
 		} finally {
 			await host.close();
 		}

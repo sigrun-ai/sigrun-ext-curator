@@ -15,18 +15,18 @@
  * 2. an internal conversation returns (the bus already withholds
  *    internal settles; this read-side gate is the belt);
  * 3. `eligibility.ownerOnly && unattributed === 0` → the fork path:
- *    take the hints (read-and-clear), count
- *    `modelCallsSince(id, lastReviewedEntry)`, and review when hints
- *    are pending (answered or not — an aborted run's hints stay
- *    pending until the next settle) or the run answered at/over the
- *    threshold;
+ *    take the hints (read-and-clear) merged with any refunded batch
+ *    (`pending-hints.json` — hints a previous review consumed but
+ *    never reviewed), count `modelCallsSince(id, lastReviewedEntry)`,
+ *    and review when hints are pending (answered or not — an aborted
+ *    run's hints stay pending until the next settle) or the run
+ *    answered at/over the threshold;
  * 4. anything else (mixed authorship, unattributed entries) → the
  *    threshold trigger alone queues a `queueDigest` entry: never
- *    forked, handed to loop 2 (Task B4). (Hints are NOT taken on
- *    this branch — `takeHints` is read-and-clear and the digest run
- *    is their consumer, so they stay pending until Task B4 takes
- *    them; a destructively-taken hint with no consumer would be
- *    dropped.)
+ *    forked, handed to loop 2 (Task B4). (Hints ride in that durable
+ *    entry — taken read-and-clear and folded into the digest run's
+ *    instruction by Task B4 — and the refund file drains into it, so
+ *    no hint can wait on both.)
  *
  * The review itself: the allow-list is `skill_manage` + the served
  * targets' tools + `read` when the parent's selection carries it; the
@@ -34,7 +34,10 @@
  * a watch on the parent aborts the run's signal the moment the parent
  * moves. Success anchors the per-conversation cursor
  * (`cursors.json`) at the eligibility snapshot's newest entry; a
- * failed run steps that user's backoff ladder.
+ * failed run steps that user's backoff ladder; any NON-completed
+ * outcome (failed, cancelled, deadline — or a thrown review) refunds
+ * its hints to `pending-hints.json`, so a consumed-but-unreviewed
+ * hint survives until some review completes with it in hand.
  */
 import type { ExtensionRunSettledHandler, SigrunHost } from "@sigrun/sigrun/extension";
 import { Backoff } from "./backoff.js";

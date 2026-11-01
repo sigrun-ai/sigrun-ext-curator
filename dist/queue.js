@@ -13,10 +13,23 @@
  *   conversation, however many runs triggered it — with the taken
  *   hints merged into the entry (the decision took them read-and-clear;
  *   the digest run folds them into its instruction).
+ * - the refunded-hints file (`pending-hints.json`) — the fix for the
+ *   dropped-hints bug: `takeHints` is read-and-clear, so a review that
+ *   ends failed / cancelled / deadline would otherwise lose its hints
+ *   for good. Non-completed reviews write them back (refund, merged by
+ *   hint id); the decision merges a conversation's refunded batch into
+ *   every fresh take; a COMPLETED review (or a digest entry that takes
+ *   ownership) clears the ids it consumed. The transfer is deliberately
+ *   at-least-once: a crash between refund and clear duplicates a hint
+ *   (dedup absorbs it), never drops one.
  *
  * Errors never break a chain: the queue's contract is that a job's
  * failure is the job's business (the loop records it); the chain keeps
  * draining.
+ *
+ * Every hints helper here dedups by hint id: a hint may briefly live in
+ * two places (host + refund file, refund file + digest entry) around a
+ * crash, and dedup makes the overlap harmless.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -124,4 +137,78 @@ export async function queueDigest(host, user, conversationId, hints = []) {
         queue[queue.indexOf(existing)] = { id: conversationId, hints: merged };
     }
     await writeStateJson(stateDir, DIGEST_QUEUE_FILE, { conversations: queue });
+}
+/** The refunded-hints file name under the user's state dir. */
+const PENDING_HINTS_FILE = "pending-hints.json";
+/** Read the refunded-hints file; absent/malformed → []. */
+async function readPendingHints(file) {
+    const parsed = await readStateJson(file, []);
+    if (!Array.isArray(parsed))
+        return [];
+    return parsed.filter((entry) => typeof entry === "object" &&
+        entry !== null &&
+        typeof entry.conversationId === "number" &&
+        Array.isArray(entry.hints));
+}
+/** Merge two hint batches into one, deduped by hint id. */
+export function mergeHints(first, second) {
+    const seen = new Set(first.map((hint) => hint.id));
+    return [...first, ...second.filter((hint) => !seen.has(hint.id))];
+}
+/** The hints refunded for one conversation (a read; nothing is cleared). */
+export async function pendingHintsFor(host, user, conversationId) {
+    const entries = await readPendingHints(join(host.stores.user(user).paths.state, PENDING_HINTS_FILE));
+    return entries.find((entry) => entry.conversationId === conversationId)
+        ?.hints ?? [];
+}
+/**
+ * Refund: write a non-completed review's hints back, merged into the
+ * conversation's refunded batch by hint id (never dropped, never
+ * duplicated — an unchanged entry is not rewritten).
+ */
+export async function refundHints(host, user, conversationId, hints) {
+    if (hints.length === 0)
+        return;
+    const stateDir = host.stores.user(user).paths.state;
+    const entries = [
+        ...(await readPendingHints(join(stateDir, PENDING_HINTS_FILE))),
+    ];
+    const existing = entries.find((entry) => entry.conversationId === conversationId);
+    if (existing === undefined) {
+        entries.push({ conversationId, hints });
+    }
+    else {
+        const merged = mergeHints(existing.hints, hints);
+        if (merged.length === existing.hints.length)
+            return; // nothing new
+        entries[entries.indexOf(existing)] = {
+            conversationId,
+            hints: merged,
+        };
+    }
+    await writeStateJson(stateDir, PENDING_HINTS_FILE, entries);
+}
+/**
+ * Clear: drop the hint ids a consumer took ownership of (a completed
+ * review, or a digest entry that persists them); the conversation's
+ * entry leaves when it empties. An unknown id (e.g. a fresh hint that
+ * was never refunded) is a no-op, and so is an untouched file.
+ */
+export async function clearPendingHints(host, user, conversationId, hints) {
+    const stateDir = host.stores.user(user).paths.state;
+    const entries = [
+        ...(await readPendingHints(join(stateDir, PENDING_HINTS_FILE))),
+    ];
+    const index = entries.findIndex((entry) => entry.conversationId === conversationId);
+    if (index === -1)
+        return; // nothing refunded: no entry to clear
+    const consumed = new Set(hints.map((hint) => hint.id));
+    const remaining = entries[index].hints.filter((hint) => !consumed.has(hint.id));
+    if (remaining.length === entries[index].hints.length)
+        return; // untouched
+    if (remaining.length === 0)
+        entries.splice(index, 1);
+    else
+        entries[index] = { conversationId, hints: remaining };
+    await writeStateJson(stateDir, PENDING_HINTS_FILE, entries);
 }
