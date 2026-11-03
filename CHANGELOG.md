@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of landing in your latest one; unanswered questions no longer
   accumulate. Questions asked before this version stay answerable where they
   were asked.
+- A review in flight is no longer cancelled by a re-rendered conversation
+  view; only genuinely new activity on the parent aborts it.
 
 ## [0.1.0] - 2026-11-02
 ### Added
