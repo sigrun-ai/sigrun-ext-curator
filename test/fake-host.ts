@@ -147,11 +147,15 @@ function inertSkills(): {
 		undo: async () => [],
 		apply: async (name, change) => {
 			const entry: CurationFeedEntry = {
-				id: `feed-${name}-${change.kind}`,
+				// The id/before/after are commit SHAs (tabs+skills Task 9):
+				// deterministic stand-ins keep the fixtures stable.
+				id: `aaaa${change.kind.length}${name.length}`.padEnd(40, "0"),
 				at: new Date(0).toISOString(),
 				actor: "curator",
 				action: change.kind,
 				skill: name,
+				before: "bbbb".padEnd(40, "0"),
+				after: `aaaa${change.kind.length}${name.length}`.padEnd(40, "0"),
 			};
 			return entry;
 		},
@@ -178,18 +182,22 @@ function inertOverlays(): {
 		list: async () => [],
 		get: async () => undefined,
 		put: async (key, _text, _hash, meta) => ({
-			id: `feed-overlay-${key.skill}`,
+			id: `cccc${key.skill.length}`.padEnd(40, "0"),
 			at: new Date(0).toISOString(),
 			actor: meta.actor,
 			action: "overlay",
 			skill: key.skill,
+			before: "bbbb".padEnd(40, "0"),
+			after: `cccc${key.skill.length}`.padEnd(40, "0"),
 		}),
 		remove: async (key, meta) => ({
-			id: `feed-overlay-remove-${key.skill}`,
+			id: `dddd${key.skill.length}`.padEnd(40, "0"),
 			at: new Date(0).toISOString(),
 			actor: meta.actor,
 			action: "overlay",
 			skill: key.skill,
+			before: `cccc${key.skill.length}`.padEnd(40, "0"),
+			after: `dddd${key.skill.length}`.padEnd(40, "0"),
 		}),
 		markOrphans: async () => undefined,
 	};

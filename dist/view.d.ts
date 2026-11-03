@@ -1,9 +1,23 @@
 /**
- * The curator view (`src/view.ts`, Task B5): the per-user surface the
- * notice navigates to — learned skills (name, description, last used,
- * pin toggle, archive/restore), overlays (orphaned flag), the change
- * feed (newest 50) grouped by review with an **Undo review** action,
- * and a pause switch.
+ * The curator view (`src/view.ts`, tabs+skills Task 13): the per-user
+ * surface the notice and the core Skills history link navigate to —
+ * the change FEED (newest 50) with an **Undo review** action per
+ * review, and a pause switch. Skill management (list, pin,
+ * archive/restore, overlays) moved to the core Skills view when it
+ * landed (core-views/skills.ts): this view lists no learned skills and
+ * no overlays any more, and its **Skills** page action navigates
+ * `{target:{view:{extension:"core", id:"skills"}}}`.
+ *
+ * A `review` param filters the feed to that review's commits (the core
+ * skills history's curator-commit link and the notice both navigate
+ * here with it). Feed entry ids are commit SHAs in the user's curation
+ * history repo (tabs+skills Task 9), so the undo groups key on the
+ * SHA, never on the review id: a review reverted through
+ * `host.curation.undoReview` needs every commit the review authored,
+ * and grouping by review id would merge two interleaved reviews into
+ * one undo. Actors render as their names — `curator`, `agent`, the
+ * user, and `outside sigrun` for catch-up commits the store itself
+ * did not author (the git trailer's actor name).
  *
  * Access follows `accessOf` (spec P8: "the user, plus the superuser as
  * with conversations"): the resource is the caller's OWN curation data,
@@ -17,15 +31,8 @@
  *
  * The actions (what an ambient record can never carry — a view's action
  * routes DO reach the extension). Per-item actions ride the block
- * set's item-scoped dispatches, which carry `{itemId}` (a card action
- * button's submit dispatches a `null` payload — it cannot name an
- * item, `onCheck`/`onActivate` can):
+ * set's item-scoped dispatches, which carry `{itemId}`:
  *
- * - `pin` — the skills collection's `checkable`/`onCheck`:
- *   `{itemId: skill, value}` → the skill store's `pin`;
- * - `toggleArchive` — the skills collection's `onActivate`
- *   (`{itemId: skill}`): reads the store's current state and archives
- *   or restores through `apply` (feed-recorded, undoable);
  * - `undoReview` — the feed collection's `onActivate`
  *   (`{itemId: reviewId}`): `host.curation.undoReview`, then
  *   `host.clearAmbient` on the notice conversation's `curator.notice`
@@ -52,6 +59,7 @@ export interface ReviewGroup {
         readonly skill: string;
         readonly action: string;
         readonly at: string;
+        readonly actor: string;
         readonly reason?: string;
     }[];
 }
@@ -59,20 +67,6 @@ export interface ReviewGroup {
 export interface CuratorViewData {
     readonly user: string;
     readonly paused: boolean;
-    readonly skills: readonly {
-        readonly id: string;
-        readonly name: string;
-        readonly description: string;
-        readonly archived: boolean;
-        readonly pinned: boolean;
-        readonly lastUsedLabel: string;
-    }[];
-    readonly overlays: readonly {
-        readonly id: string;
-        readonly skill: string;
-        readonly root: string;
-        readonly orphaned: boolean;
-    }[];
     readonly reviews: readonly ReviewGroup[];
 }
 /**
@@ -84,9 +78,15 @@ export interface CuratorViewData {
  * rule would widen to household write, so anonymous is none BY HAND.
  */
 export declare function viewAccess(principal: Principal, user: string): Access;
-/** Group a feed by review: entries sharing a reviewId form one group
- *  (the feed's newest-first order preserved, outside and inside). An
- *  entry with no reviewId (user pins, direct edits) groups alone. */
+/** One actor's display name (the git trailer's name: outside
+ *  catch-up commits render as "outside sigrun"). */
+export declare function actorLabel(entry: CurationFeedEntry): string;
+/** Group a feed for undo: entries SHARING A REVIEW ID AND ADJACENT in
+ *  the newest-first feed form one group — the group's id is its newest
+ *  commit sha (`review-<sha>`). Keying on the sha (never the review
+ *  id) keeps two interleaved reviews apart: undoing one must revert
+ *  exactly the commits it authored. An entry with no reviewId groups
+ *  alone (a lone commit is never undoable as a review). */
 export declare function groupFeed(feed: readonly CurationFeedEntry[]): readonly ReviewGroup[];
 /** The view surface (`SurfaceDef<"view">`), built over the host. */
 export declare function createCuratorView(host: SigrunHost): SurfaceDef<"view">;
