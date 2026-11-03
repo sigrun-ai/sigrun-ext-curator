@@ -124,25 +124,27 @@ function reviewParam(ctx) {
     const review = ctx.params.review;
     return typeof review === "string" && review !== "" ? review : undefined;
 }
-/** Read the feed, walking pages until `review`'s entries appear or
- *  the bounded walk elapses (core's feedOf shape, bounded). A miss
- *  after the bound is reported, not rendered as the empty feed. */
+/** Read the feed: the plain view is the newest VIEW_FEED_LIMIT only
+ *  (the section's "newest 50" contract — every rendered group's sha
+ *  resolves for undo from that same page). A `review` deep-link pages
+ *  on (last sha as the cursor, core's feedOf shape, bounded) until
+ *  the review's entries appear or the walk elapses; a miss on ANY
+ *  exit path — short page or bound — is reported, never rendered as
+ *  the false "Nothing learned yet". */
 async function feedFor(host, user, review) {
     const store = host.curation.skills(user);
     const collected = [];
     let before;
-    for (let page = 0; page < VIEW_FEED_MAX_PAGES; page++) {
+    do {
         const rows = await store.feed(VIEW_FEED_LIMIT, before);
         collected.push(...rows);
-        if (rows.length < VIEW_FEED_LIMIT) {
-            return { feed: collected, reviewMissed: false };
-        }
+        if (rows.length < VIEW_FEED_LIMIT)
+            break; // the last page
         if (review !== undefined &&
-            rows.some((entry) => entry.reviewId === review)) {
-            return { feed: collected, reviewMissed: false };
-        }
+            rows.some((entry) => entry.reviewId === review))
+            break; // the deep-link found its review
         before = rows[rows.length - 1]?.id;
-    }
+    } while (review !== undefined && collected.length < VIEW_FEED_LIMIT * VIEW_FEED_MAX_PAGES);
     return {
         feed: collected,
         reviewMissed: review !== undefined &&

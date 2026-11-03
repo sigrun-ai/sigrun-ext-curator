@@ -316,6 +316,86 @@ describe("the curator view", () => {
 		}
 	});
 
+	test("a deep-link missing on a PARTIAL final page renders the distinct empty state", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			// 60 entries: page 1 full (no match), page 2 partial (no
+			// match). The walk ends on the short page — and the miss must
+			// still render the distinct message, never "Nothing learned
+			// yet".
+			const page1 = Array.from({ length: 50 }, (_, i) =>
+				feedEntry(`aa00${String(i + 10).padStart(2, "0")}`, { skill: `recent-${i}` }),
+			);
+			const page2 = Array.from({ length: 10 }, (_, i) =>
+				feedEntry(`cc00${String(i).padStart(2, "0")}`, { skill: `old-${i}` }),
+			);
+			host.setCuration({
+				skills: (_user) => ({
+					list: async () => [],
+					feed: async (limit, before) =>
+						before === undefined ? page1.slice(0, limit) : page2,
+					pin: async () => undefined,
+					view: async () => "",
+					undo: async () => [],
+					apply: async (name, change) => ({
+						id: `feed-${name}-${change.kind}`,
+						at: "2026-11-01T00:00:00.000Z",
+						actor: "curator",
+						action: change.kind,
+						skill: name,
+					}),
+				}),
+			});
+			const view = createCuratorView(host);
+			const rendered = await view.render(ctxOf(ALICE, { review: "review-ancient" }));
+			const text = JSON.stringify(rendered.tree);
+			expect(text).toContain("This review is older than the recent changes");
+			expect(text).not.toContain("Nothing learned yet");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("the plain view stays newest-50 (no paging without a review param)", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			// A feed deeper than one page: the plain view reads page 1
+			// only, so every rendered group's sha resolves for undo.
+			const page1 = Array.from({ length: 50 }, (_, i) =>
+				feedEntry(`aa00${String(i + 10).padStart(2, "0")}`, { skill: `recent-${i}` }),
+			);
+			const page2 = [feedEntry("aa0001", { skill: "deeper" })];
+			const seenBefore: (string | undefined)[] = [];
+			host.setCuration({
+				skills: (_user) => ({
+					list: async () => [],
+					feed: async (limit, before) => {
+						seenBefore.push(before);
+						return before === undefined ? page1.slice(0, limit) : page2;
+					},
+					pin: async () => undefined,
+					view: async () => "",
+					undo: async () => [],
+					apply: async (name, change) => ({
+						id: `feed-${name}-${change.kind}`,
+						at: "2026-11-01T00:00:00.000Z",
+						actor: "curator",
+						action: change.kind,
+						skill: name,
+					}),
+				}),
+			});
+			const view = createCuratorView(host);
+			const rendered = await view.render(ctxOf(ALICE));
+			const text = JSON.stringify(rendered.tree);
+			expect(text).toContain("recent-0");
+			expect(text).not.toContain("deeper");
+			expect(seenBefore).toEqual([undefined]);
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("feed entries group by commit sha, keeping reviews apart; bob sees nothing of alice's", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
 		try {
