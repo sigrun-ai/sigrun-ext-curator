@@ -51,7 +51,7 @@ import {
 	tick,
 } from "../src/loop2.js";
 import type { ModelStepDeps, RunBudget } from "../src/steps/run.js";
-import { OverlayRecheckQueue, recheckOverlays, overlayQuestionHandler } from "../src/steps/overlays.js";
+import { OverlayRecheckQueue, recheckOverlays, overlayQuestionHandler, keyId } from "../src/steps/overlays.js";
 import { digestsStep } from "../src/steps/digests.js";
 import { dietStep } from "../src/steps/diet.js";
 import { mergeStep } from "../src/steps/merge.js";
@@ -303,18 +303,25 @@ describe("overlay unsure", () => {
 		return { host, recent, older, puts, removes };
 	}
 
-	test("unsure seeds one question in the most recent owned conversation; a keep answer applies", async () => {
+	test("unsure seeds one question in a NEW conversation owned by the user; a keep answer applies", async () => {
 		const { host, recent, older, puts } = await setupUnsure();
 		try {
 			scriptDigestRuns(host, [completed('{"verdict":"unsure"}')]);
 
 			await recheckOverlays(stepDeps(host, 12));
 
-			// Exactly ONE interaction, in the MOST RECENT owned conversation.
+			// Exactly ONE interaction, in a conversation created for it
+			// (owned by the user) — never an existing one from the list.
 			const seeds = host.calls.filter((call) => call.method === "seedInteraction");
 			expect(seeds).toHaveLength(1);
-			expect(seeds[0].args[0]).toBe(recent);
-			expect(seeds[0].args[0]).not.toBe(older);
+			const askedIn = seeds[0].args[0] as number;
+			expect(askedIn).not.toBe(recent);
+			expect(askedIn).not.toBe(older);
+			const creates = host.calls.filter(
+				(call) => call.method === "conversations.create",
+			);
+			expect(creates).toHaveLength(3); // the two fixtures + the question conversation
+			expect(creates[2].args[0]).toMatchObject({ owner: ALICE });
 			const callId = seeds[0].args[1] as string;
 			const record = host.interactions.get(`${recent}:${callId}`)!;
 			expect(record.kind).toBe(CURATOR_OVERLAY_QUESTION_KIND);
@@ -412,6 +419,424 @@ describe("overlay unsure", () => {
 				CONTEXT,
 			);
 			expect(removes).toEqual(["acme-unsure"]);
+		} finally {
+			await host.close();
+		}
+	});
+});
+
+// ─── Scenario 2b: overlay questions — the bounded v2 file and the new conversation ───
+
+describe("overlay questions (v2)", () => {
+	/** Script drifted overlays + unsure runs for the named skills. */
+	async function setupUnsureSkills(host: FakeHost, skills: readonly string[]) {
+		host.setCuration({
+			overlays: (user) => ({
+				...scriptable(host).defaults.overlays(user),
+				get: async (k) =>
+					skills.includes(k.skill)
+						? overlayOf(k.skill, { hash: "old" })
+						: undefined,
+			}),
+			upstream: async (_user, k) =>
+				skills.includes(k.skill)
+					? { body: `new ${k.skill} body`, hash: `new-${k.skill}` }
+					: undefined,
+		});
+		await new OverlayRecheckQueue(host, ALICE).enqueue(skills.map(key));
+		scriptDigestRuns(
+			host,
+			skills.map(() => completed('{"verdict":"unsure"}')),
+		);
+	}
+
+	/** Write alice's pending-questions file verbatim (a v1 array or a v2 object). */
+	async function writeQuestions(host: FakeHost, value: unknown): Promise<void> {
+		const state = host.stores.user(ALICE).paths.state;
+		await mkdir(state, { recursive: true });
+		await writeFile(
+			join(state, "overlay-questions.json"),
+			`${JSON.stringify(value)}\n`,
+			"utf8",
+		);
+	}
+
+	/** Read alice's pending-questions file in its v2 shape. */
+	async function readQuestions(
+		host: FakeHost,
+	): Promise<{
+		v: number;
+		questions: Record<string, { callId: string; conversationId: number }>;
+		legacy: { callId: string }[];
+	}> {
+		return (await readState(host, "overlay-questions.json")) as never;
+	}
+
+	/** One pending-question fixture (the shape both file versions share). */
+	function question(
+		skill: string,
+		callId: string,
+		conversationId?: number,
+	): Record<string, unknown> {
+		return {
+			user: ALICE,
+			key: key(skill),
+			upstreamHash: `${skill}-hash`,
+			overlayText: `${skill} notes`,
+			callId,
+			...(conversationId === undefined ? {} : { conversationId }),
+		};
+	}
+
+	test("an unsure verdict asks in a new conversation owned by the user", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			// Pre-existing owned conversations the question must NOT land in.
+			const existing = await host.conversations.create({ owner: ALICE });
+			host.setLastActivity(existing, NOW.toISOString());
+			await setupUnsureSkills(host, ["acme-solo"]);
+
+			await recheckOverlays(stepDeps(host, 12));
+
+			const seeds = host.calls.filter((call) => call.method === "seedInteraction");
+			expect(seeds).toHaveLength(1);
+			const askedIn = seeds[0].args[0] as number;
+			expect(askedIn).not.toBe(existing);
+			// The new conversation is the user's, titled for what it holds.
+			const meta = await host.conversations.meta(askedIn as ConversationId);
+			expect(meta.owner).toBe(ALICE);
+			expect(meta.name).toBe('Your notes on "acme-solo"');
+			// The pending file carries the question under its key, with the
+			// conversation it was asked in.
+			const file = await readQuestions(host);
+			expect(file.v).toBe(2);
+			expect(Object.keys(file.questions)).toEqual([keyId(key("acme-solo"))]);
+			expect(Object.values(file.questions)[0].conversationId).toBe(askedIn);
+			expect(file.legacy).toEqual([]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("unsure verdicts in one recheck share one new conversation", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			await setupUnsureSkills(host, ["acme-one", "acme-two"]);
+
+			await recheckOverlays(stepDeps(host, 12));
+
+			const creates = host.calls.filter(
+				(call) => call.method === "conversations.create",
+			);
+			expect(creates).toHaveLength(1);
+			const seeds = host.calls.filter((call) => call.method === "seedInteraction");
+			expect(seeds).toHaveLength(2);
+			expect(seeds[0].args[0]).toBe(seeds[1].args[0]);
+			const askedIn = seeds[0].args[0] as number;
+			// One notice, targeting the new conversation.
+			const notices = host.calls.filter((call) => call.method === "notify");
+			expect(notices).toHaveLength(1);
+			const notice = notices[0].args[0] as {
+				kind: string;
+				title: string;
+				body: string;
+				target?: { conversation: number };
+			};
+			expect(notice.kind).toBe("curator.overlay-question");
+			expect(notice.title).toBe("Notes to review");
+			expect(notice.target).toEqual({ conversation: askedIn });
+			// The second question renamed the conversation for what it holds.
+			const patches = host.calls.filter(
+				(call) => call.method === "conversations.patchMeta",
+			);
+			expect(patches).toHaveLength(1);
+			expect(patches[0].args[0]).toBe(askedIn);
+			expect(patches[0].args[1]).toEqual({ name: "Your notes on 2 skills" });
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("re-asking a skill cancels the open question", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			await writeQuestions(host, {
+				v: 2,
+				questions: {
+					[keyId(key("acme-reask"))]: question("acme-reask", "old-open", 42),
+				},
+				legacy: [],
+			});
+			await setupUnsureSkills(host, ["acme-reask"]);
+
+			await recheckOverlays(stepDeps(host, 12));
+
+			const settles = host.calls.filter(
+				(call) => call.method === "settleInteraction",
+			);
+			expect(settles).toHaveLength(1);
+			expect(settles[0].args.slice(0, 3)).toEqual([42, "old-open", "cancelled"]);
+			const file = await readQuestions(host);
+			expect(Object.values(file.questions)).toHaveLength(1);
+			expect(Object.values(file.questions)[0].callId).not.toBe("old-open");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("re-ask still asks when the old conversation is gone", async () => {
+		for (const behavior of ["false", { reject: new Error("gone") }] as const) {
+			const host = await createFakeHost({ users: [{ user: ALICE }] });
+			try {
+				host.setSettleBehavior(behavior);
+				await writeQuestions(host, {
+					v: 2,
+					questions: {
+						[keyId(key("acme-gone"))]: question("acme-gone", "old-gone", 42),
+					},
+					legacy: [],
+				});
+				await setupUnsureSkills(host, ["acme-gone"]);
+
+				await recheckOverlays(stepDeps(host, 12));
+
+				const seeds = host.calls.filter(
+					(call) => call.method === "seedInteraction",
+				);
+				expect(seeds).toHaveLength(1);
+				const file = await readQuestions(host);
+				expect(Object.values(file.questions)).toHaveLength(1);
+				expect(Object.values(file.questions)[0].callId).not.toBe("old-gone");
+			} finally {
+				await host.close();
+			}
+		}
+	});
+
+	test("a skipped, cancelled or expired question leaves the file and the overlay unchanged", async () => {
+		for (const status of ["skipped", "cancelled", "expired"] as const) {
+			const host = await createFakeHost({ users: [{ user: ALICE }] });
+			try {
+				const convId = await host.conversations.create({ owner: ALICE });
+				const callId = `acme-q-${status}`;
+				await writeQuestions(host, {
+					v: 2,
+					questions: {
+						[keyId(key("acme-settled"))]: question("acme-settled", callId, convId),
+					},
+					legacy: [],
+				});
+				const writes: string[] = [];
+				host.setCuration({
+					overlays: (user) => ({
+						...scriptable(host).defaults.overlays(user),
+						put: async (k) => {
+							writes.push(`put:${k.skill}`);
+							return scriptable(host)
+								.defaults.overlays(user)
+								.put(k, "", "", { actor: "curator" });
+						},
+						remove: async (k, meta) => {
+							writes.push(`remove:${k.skill}`);
+							return scriptable(host).defaults.overlays(user).remove(k, meta);
+						},
+					}),
+				});
+
+				const handler = overlayQuestionHandler(host).interactionSettled!;
+				await handler(
+					{
+						conversationId: convId,
+						callId,
+						kind: CURATOR_OVERLAY_QUESTION_KIND,
+						status,
+						owner: ALICE,
+					},
+					API,
+					CONTEXT,
+				);
+
+				expect(writes).toEqual([]);
+				const file = await readQuestions(host);
+				expect(Object.keys(file.questions)).toEqual([]);
+				expect(file.legacy).toEqual([]);
+			} finally {
+				await host.close();
+			}
+		}
+	});
+
+	test("answered keep re-anchors and drop removes; the entry leaves the file", async () => {
+		for (const verdict of ["keep", "drop"] as const) {
+			const host = await createFakeHost({ users: [{ user: ALICE }] });
+			try {
+				const convId = await host.conversations.create({ owner: ALICE });
+				const callId = `acme-answered-${verdict}`;
+				await writeQuestions(host, {
+					v: 2,
+					questions: {
+						[keyId(key("acme-verdict"))]: question("acme-verdict", callId, convId),
+					},
+					legacy: [],
+				});
+				const puts: string[] = [];
+				const removes: string[] = [];
+				host.setCuration({
+					overlays: (user) => ({
+						...scriptable(host).defaults.overlays(user),
+						put: async (k, text, hash) => {
+							puts.push(`${k.skill}|${text}|${hash}`);
+							return scriptable(host)
+								.defaults.overlays(user)
+								.put(k, text, hash, { actor: "curator" });
+						},
+						remove: async (k, meta) => {
+							removes.push(k.skill);
+							return scriptable(host).defaults.overlays(user).remove(k, meta);
+						},
+					}),
+				});
+
+				const handler = overlayQuestionHandler(host).interactionSettled!;
+				await handler(
+					{
+						conversationId: convId,
+						callId,
+						kind: CURATOR_OVERLAY_QUESTION_KIND,
+						status: "answered",
+						answer: { verdict },
+						owner: ALICE,
+					},
+					API,
+					CONTEXT,
+				);
+
+				if (verdict === "keep") {
+					expect(puts).toEqual(["acme-verdict|acme-verdict notes|acme-verdict-hash"]);
+					expect(removes).toEqual([]);
+				} else {
+					expect(removes).toEqual(["acme-verdict"]);
+					expect(puts).toEqual([]);
+				}
+				const file = await readQuestions(host);
+				expect(Object.keys(file.questions)).toEqual([]);
+			} finally {
+				await host.close();
+			}
+		}
+	});
+
+	test("a legacy array file is migrated without losing questions", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			// A v1 file: THREE entries, two for one skill.
+			await writeQuestions(host, [
+				question("acme-dupe", "legacy-dupe-1"),
+				question("acme-dupe", "legacy-dupe-2"),
+				question("acme-other", "legacy-other"),
+			]);
+			await setupUnsureSkills(host, ["acme-new"]);
+
+			await recheckOverlays(stepDeps(host, 12));
+
+			const file = await readQuestions(host);
+			expect(file.v).toBe(2);
+			// The v1 entries moved to `legacy` unchanged (no conversationId,
+			// no cancellation); the new question went to `questions`.
+			expect(file.legacy.map((entry) => entry.callId)).toEqual([
+				"legacy-dupe-1",
+				"legacy-dupe-2",
+				"legacy-other",
+			]);
+			expect(Object.keys(file.questions)).toEqual([keyId(key("acme-new"))]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a legacy question is still applied when answered", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			await writeQuestions(host, [question("acme-legacy", "legacy-keep")]);
+			const puts: string[] = [];
+			host.setCuration({
+				overlays: (user) => ({
+					...scriptable(host).defaults.overlays(user),
+					put: async (k, text, hash) => {
+						puts.push(`${k.skill}|${text}|${hash}`);
+						return scriptable(host)
+							.defaults.overlays(user)
+							.put(k, text, hash, { actor: "curator" });
+					},
+				}),
+			});
+
+			const handler = overlayQuestionHandler(host).interactionSettled!;
+			await handler(
+				{
+					conversationId: 7 as ConversationId,
+					callId: "legacy-keep",
+					kind: CURATOR_OVERLAY_QUESTION_KIND,
+					status: "answered",
+					answer: { verdict: "keep" },
+					owner: ALICE,
+				},
+				API,
+				CONTEXT,
+			);
+
+			// keep re-anchored the remembered text on the remembered hash,
+			// and the legacy entry left the file (migrated to the v2 shape).
+			expect(puts).toEqual(["acme-legacy|acme-legacy notes|acme-legacy-hash"]);
+			const file = await readQuestions(host);
+			expect(file.v).toBe(2);
+			expect(file.legacy).toEqual([]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("re-asking a skill that has only a legacy entry still asks", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			await writeQuestions(host, [question("acme-reask", "legacy-reask")]);
+			await setupUnsureSkills(host, ["acme-reask"]);
+
+			await recheckOverlays(stepDeps(host, 12));
+
+			// The legacy entry has no conversation to cancel: no settle call,
+			// legacy untouched, and the NEW question asked under the key.
+			expect(
+				host.calls.some((call) => call.method === "settleInteraction"),
+			).toBe(false);
+			const file = await readQuestions(host);
+			expect(file.legacy.map((entry) => entry.callId)).toEqual(["legacy-reask"]);
+			expect(Object.keys(file.questions)).toEqual([keyId(key("acme-reask"))]);
+			expect(
+				Object.values(file.questions)[0].callId,
+			).not.toBe("legacy-reask");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a failed notice does not lose the question", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			host.setNotifyBehavior({ reject: new Error("notifier down") });
+			await setupUnsureSkills(host, ["acme-notify"]);
+
+			// The step does not throw on the failed notice...
+			await recheckOverlays(stepDeps(host, 12));
+
+			// ...the notice WAS attempted...
+			expect(host.calls.some((call) => call.method === "notify")).toBe(true);
+			// ...and the question is seeded and on file regardless.
+			expect(
+				host.calls.filter((call) => call.method === "seedInteraction"),
+			).toHaveLength(1);
+			const file = await readQuestions(host);
+			expect(Object.keys(file.questions)).toEqual([keyId(key("acme-notify"))]);
 		} finally {
 			await host.close();
 		}

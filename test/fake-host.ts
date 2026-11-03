@@ -99,6 +99,17 @@ export interface FakeHost extends SigrunHost {
 	setLastActivity(id: ConversationId, iso: string | undefined): void;
 	/** Push one view to every `watch` listener of `id`. */
 	pushView(id: ConversationId, view: ConversationViewWire): void;
+	/** Script `settleInteraction`'s outcome (default: the real in-memory
+	 *  transition — true when a pending record settles). */
+	setSettleBehavior(
+		behavior:
+			| "transition"
+			| "true"
+			| "false"
+			| { readonly reject: unknown },
+	): void;
+	/** Script `notify`'s outcome (default: ok — the notice is recorded). */
+	setNotifyBehavior(behavior: "ok" | { readonly reject: unknown }): void;
 	/** The stored interaction records, keyed `${conversationId}:${callId}`. */
 	readonly interactions: ReadonlyMap<string, InteractionRecord>;
 	/** The stored conversation metas, keyed id. */
@@ -236,6 +247,12 @@ export async function createFakeHost(
 	const interactions = new Map<string, InteractionRecord>();
 	const metas = new Map<ConversationId, SessionMeta>();
 	const accountLinks = new Map<string, AccountLinkWire>();
+	// `settleInteraction`'s scripted outcome: "transition" runs the real
+	// in-memory transition; "true"/"false" return verbatim; {reject}
+	// throws. Tests set it via `setSettleBehavior`.
+	let settleBehavior: "transition" | "true" | "false" | { readonly reject: unknown } =
+		"transition";
+	let notifyBehavior: "ok" | { readonly reject: unknown } = "ok";
 
 	const models: ModelEntry[] = [
 		{
@@ -446,8 +463,10 @@ export async function createFakeHost(
 			});
 			return true;
 		},
-		settleInteraction: async (conversationId, callId, status) => {
+		settleInteraction: async (conversationId, callId, status, _context) => {
 			record("settleInteraction", conversationId, callId, status);
+			if (typeof settleBehavior === "object") throw settleBehavior.reject;
+			if (settleBehavior !== "transition") return settleBehavior === "true";
 			const key = `${conversationId}:${callId}`;
 			const rec = interactions.get(key);
 			if (rec === undefined || rec.status !== "pending") return false;
@@ -535,6 +554,15 @@ export async function createFakeHost(
 					}
 				);
 			},
+			entries: async (id, query, limit, cursor) => {
+				record("conversations.entries", id, query, limit, cursor);
+				// Recording stub: tests that need entries pass their own host.
+				return { items: [] };
+			},
+			entry: async (id, entryId) => {
+				record("conversations.entry", id, entryId);
+				return undefined;
+			},
 			abort: async (id) => {
 				record("conversations.abort", id);
 			},
@@ -584,6 +612,18 @@ export async function createFakeHost(
 				record("conversations.readFile", id, path);
 				throw new Error(`fake host: no file at ${path}`);
 			},
+		},
+
+		jobs: {
+			get: async (id) => {
+				record("jobs.get", id);
+				return undefined;
+			},
+		},
+
+		notify: async (input) => {
+			record("notify", input);
+			if (typeof notifyBehavior === "object") throw notifyBehavior.reject;
 		},
 
 		users: {
@@ -682,6 +722,12 @@ export async function createFakeHost(
 		setLastActivity: (id, iso) => {
 			if (iso === undefined) conversationActivity.delete(id);
 			else conversationActivity.set(id, iso);
+		},
+		setSettleBehavior: (behavior) => {
+			settleBehavior = behavior;
+		},
+		setNotifyBehavior: (behavior) => {
+			notifyBehavior = behavior;
 		},
 		setCuration: (overrides) => {
 			for (const [key, value] of Object.entries(overrides)) {
