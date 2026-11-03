@@ -69,6 +69,12 @@ import { parseCuratorSettings } from "./settings.js";
 /** How many feed entries the view lists (the brief: newest 50). */
 export const VIEW_FEED_LIMIT = 50;
 
+/** How many pages a `review` deep-link walks before giving up (the
+ *  link arrives from the core skills history at ANY depth; core's
+ *  own `feedOf` walks until the entries run out — this view bounds
+ *  the walk and says so when the bound elapses). */
+export const VIEW_FEED_MAX_PAGES = 3;
+
 /** The zero-signal context the ambient clear runs under. */
 const CONTEXT = { abortSignal: undefined };
 
@@ -91,6 +97,10 @@ export interface CuratorViewData {
 	readonly user: string;
 	readonly paused: boolean;
 	readonly reviews: readonly ReviewGroup[];
+	/** True when a `review` deep-link missed after the bounded walk
+	 *  (the empty state is then "older than the recent changes", never
+	 *  the false "Nothing learned yet"). */
+	readonly reviewMissed: boolean;
 }
 
 /**
@@ -163,6 +173,39 @@ function reviewParam(ctx: SurfaceContext): string | undefined {
 	return typeof review === "string" && review !== "" ? review : undefined;
 }
 
+/** Read the feed, walking pages until `review`'s entries appear or
+ *  the bounded walk elapses (core's feedOf shape, bounded). A miss
+ *  after the bound is reported, not rendered as the empty feed. */
+async function feedFor(
+	host: SigrunHost,
+	user: string,
+	review: string | undefined,
+): Promise<{ feed: readonly CurationFeedEntry[]; reviewMissed: boolean }> {
+	const store = host.curation.skills(user);
+	const collected: CurationFeedEntry[] = [];
+	let before: string | undefined;
+	for (let page = 0; page < VIEW_FEED_MAX_PAGES; page++) {
+		const rows = await store.feed(VIEW_FEED_LIMIT, before);
+		collected.push(...rows);
+		if (rows.length < VIEW_FEED_LIMIT) {
+			return { feed: collected, reviewMissed: false };
+		}
+		if (
+			review !== undefined &&
+			rows.some((entry) => entry.reviewId === review)
+		) {
+			return { feed: collected, reviewMissed: false };
+		}
+		before = rows[rows.length - 1]?.id;
+	}
+	return {
+		feed: collected,
+		reviewMissed:
+			review !== undefined &&
+			!collected.some((entry) => entry.reviewId === review),
+	};
+}
+
 /** Build the view's data document for one user (the render's model). */
 async function readData(
 	host: SigrunHost,
@@ -170,7 +213,7 @@ async function readData(
 	review: string | undefined,
 ): Promise<CuratorViewData> {
 	const settings = parseCuratorSettings(await host.stores.user(user).settings.get());
-	const feed = await host.curation.skills(user).feed(VIEW_FEED_LIMIT);
+	const { feed, reviewMissed } = await feedFor(host, user, review);
 	return {
 		user,
 		paused: settings.paused,
@@ -179,6 +222,7 @@ async function readData(
 				? feed
 				: feed.filter((entry) => entry.reviewId === review),
 		),
+		reviewMissed,
 	};
 }
 
@@ -260,11 +304,18 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 				// by groupFeed); core's undoReview matches entry.reviewId.
 				// Resolve the sha back to the review id through the feed — a
 				// verbatim dispatch would match nothing and silently revert 0.
+				// A bare review id (the pre-upgrade coordinate, and digest
+				// ids like "digest-<date>" that already carry the prefix) is
+				// the fallback when no entry's sha matches.
 				const sha = itemId.startsWith("review-")
 					? itemId.slice("review-".length)
 					: itemId;
 				const feed = await host.curation.skills(who.user).feed(VIEW_FEED_LIMIT);
-				const reviewId = feed.find((entry) => entry.id === sha)?.reviewId;
+				const reviewId =
+					feed.find((entry) => entry.id === sha)?.reviewId ??
+					(feed.some((entry) => entry.reviewId === itemId)
+						? itemId
+						: undefined);
 				if (reviewId === undefined) {
 					return { ok: true, toast: "Nothing to undo" };
 				}
@@ -375,7 +426,9 @@ function viewTree(data: CuratorViewData) {
 						data.reviews.length === 0
 							? {
 									type: "markdown" as const,
-									text: "Nothing learned yet. Use /learn to ask for a review now.",
+									text: data.reviewMissed
+										? "This review is older than the recent changes."
+										: "Nothing learned yet. Use /learn to ask for a review now.",
 								}
 							: {
 									type: "collection" as const,

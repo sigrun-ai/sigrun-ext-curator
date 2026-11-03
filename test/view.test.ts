@@ -170,12 +170,41 @@ describe("the curator view", () => {
 			]);
 			const view = createCuratorView(host);
 			const rendered = await view.render(ctxOf(ALICE));
-			const text = JSON.stringify(rendered.tree);
-			// The outside entry renders with the outside label (the git
-			// trailer's actor name); the curator entry keeps its own.
-			expect(text).toContain("outside sigrun");
-			expect(text).toContain("deploy-staging");
-			expect(text).toContain("curator");
+			// The ROW carries the outside label (the git trailer's actor
+			// name), not just the section blurb.
+			expect(JSON.stringify(rendered.tree)).toContain(
+				"patch deploy-staging (outside sigrun)",
+			);
+			// And the data document's actor field is the label.
+			const data = rendered.data as unknown as {
+				reviews: readonly { entries: readonly { actor: string }[] }[];
+			};
+			const actors = data.reviews.flatMap((group) =>
+				group.entries.map((entry) => entry.actor),
+			);
+			expect(actors).toEqual(["curator", "outside sigrun"]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("interleaved reviews stay apart (A, B, A groups as A-run, B, A-run)", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [
+				feedEntry("aa0001", { reviewId: "review-a", skill: "one" }),
+				feedEntry("aa0002", { reviewId: "review-b", skill: "two" }),
+				feedEntry("aa0003", { reviewId: "review-a", skill: "three" }),
+			]);
+			const view = createCuratorView(host);
+			const rendered = await view.render(ctxOf(ALICE));
+			// Three groups, one per same-review RUN — the two review-a
+			// commits never merge into one undo.
+			expect(reviewIds(rendered.tree)).toEqual([
+				"review-aa0001",
+				"review-aa0002",
+				"review-aa0003",
+			]);
 		} finally {
 			await host.close();
 		}
@@ -202,6 +231,86 @@ describe("the curator view", () => {
 			const oneText = JSON.stringify(one.tree);
 			expect(oneText).toContain("deploy-staging");
 			expect(oneText).not.toContain("release-flow");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a review deep-link pages the feed to find an older review", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			// The target review's commit sits on feed page 2 (beyond the
+			// first VIEW_FEED_LIMIT entries).
+			const page1 = Array.from({ length: 50 }, (_, i) =>
+				feedEntry(`aa00${String(i + 10).padStart(2, "0")}`, { skill: `recent-${i}` }),
+			);
+			const page2 = [
+				feedEntry("aa0001", { reviewId: "review-old", skill: "deploy-staging" }),
+			];
+			const seenBefore: (string | undefined)[] = [];
+			host.setCuration({
+				skills: (_user) => ({
+					list: async () => [],
+					feed: async (limit, before) => {
+						seenBefore.push(before);
+						return before === undefined ? page1.slice(0, limit) : page2;
+					},
+					pin: async () => undefined,
+					view: async () => "",
+					undo: async () => [],
+					apply: async (name, change) => ({
+						id: `feed-${name}-${change.kind}`,
+						at: "2026-11-01T00:00:00.000Z",
+						actor: "curator",
+						action: change.kind,
+						skill: name,
+					}),
+				}),
+			});
+			const view = createCuratorView(host);
+			const rendered = await view.render(ctxOf(ALICE, { review: "review-old" }));
+			const text = JSON.stringify(rendered.tree);
+			// The older review's commit renders — the deep-link found it
+			// on page 2 (the walk paged with the last sha of page 1).
+			expect(text).toContain("deploy-staging");
+			expect(text).not.toContain("Nothing learned yet");
+			expect(text).not.toContain("older than the recent changes");
+			expect(seenBefore).toEqual([undefined, "aa0059"]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a review deep-link past the bounded walk renders a distinct empty state", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			// Every page is full and never carries the review: the walk
+			// gives up after its bound.
+			host.setCuration({
+				skills: (_user) => ({
+					list: async () => [],
+					feed: async (limit, _before) =>
+						Array.from({ length: limit }, (_, i) =>
+							feedEntry(`bb${String(i).padStart(4, "0")}`, { skill: `filler-${i}` }),
+						),
+					pin: async () => undefined,
+					view: async () => "",
+					undo: async () => [],
+					apply: async (name, change) => ({
+						id: `feed-${name}-${change.kind}`,
+						at: "2026-11-01T00:00:00.000Z",
+						actor: "curator",
+						action: change.kind,
+						skill: name,
+					}),
+				}),
+			});
+			const view = createCuratorView(host);
+			const rendered = await view.render(ctxOf(ALICE, { review: "review-ancient" }));
+			const text = JSON.stringify(rendered.tree);
+			// The distinct message — never the false "Nothing learned yet".
+			expect(text).toContain("This review is older than the recent changes");
+			expect(text).not.toContain("Nothing learned yet");
 		} finally {
 			await host.close();
 		}
@@ -298,6 +407,29 @@ describe("the curator view", () => {
 			expect(cleared).toHaveLength(1);
 			expect(cleared[0]?.args[0]).toBe(conversation);
 			expect(cleared[0]?.args[1]).toBe(CURATOR_NOTICE_KIND);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a bare review id still undoes (the pre-upgrade coordinate)", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [
+				feedEntry("aa0001", { reviewId: "review-3", skill: "deploy-staging" }),
+			]);
+			const view = createCuratorView(host);
+			// No `review-` prefix, and no entry whose id is "review-3":
+			// the sha lookup misses, the reviewId fallback resolves.
+			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
+				itemId: "review-3",
+			});
+			expect(result).toMatchObject({ ok: true });
+			const undos = host.calls.filter(
+				(call) => call.method === "curation.undoReview",
+			);
+			expect(undos).toHaveLength(1);
+			expect(undos[0]?.args).toEqual([ALICE, "review-3"]);
 		} finally {
 			await host.close();
 		}

@@ -54,6 +54,11 @@ import type { CurationFeedEntry, Principal, SigrunHost, SurfaceDef } from "@sigr
 import type { Access } from "@sigrun/shared/access";
 /** How many feed entries the view lists (the brief: newest 50). */
 export declare const VIEW_FEED_LIMIT = 50;
+/** How many pages a `review` deep-link walks before giving up (the
+ *  link arrives from the core skills history at ANY depth; core's
+ *  own `feedOf` walks until the entries run out — this view bounds
+ *  the walk and says so when the bound elapses). */
+export declare const VIEW_FEED_MAX_PAGES = 3;
 /** One grouped review block in the feed (newest first). */
 export interface ReviewGroup {
     readonly id: string;
@@ -72,6 +77,10 @@ export interface CuratorViewData {
     readonly user: string;
     readonly paused: boolean;
     readonly reviews: readonly ReviewGroup[];
+    /** True when a `review` deep-link missed after the bounded walk
+     *  (the empty state is then "older than the recent changes", never
+     *  the false "Nothing learned yet"). */
+    readonly reviewMissed: boolean;
 }
 /**
  * Resolve one principal's access to their per-user view instance (spec
