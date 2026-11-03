@@ -492,6 +492,54 @@ describe("the curator view", () => {
 		}
 	});
 
+	test("a deep-linked undo dispatches the param's review id (the group sha may sit past page 1)", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			// The deep-linked review's commit is on feed page 2: the
+			// group key review-<sha> cannot resolve from page 1, and the
+			// reviewId fallback misses (the itemId is not the review id).
+			// The deep-link param already names the review — the undo
+			// dispatches it directly.
+			const page1 = Array.from({ length: 50 }, (_, i) =>
+				feedEntry(`aa00${String(i + 10).padStart(2, "0")}`, { skill: `recent-${i}` }),
+			);
+			const page2 = [
+				feedEntry("aa0001", { reviewId: "review-3", skill: "deploy-staging" }),
+			];
+			host.setCuration({
+				skills: (_user) => ({
+					list: async () => [],
+					feed: async (limit, before) =>
+						before === undefined ? page1.slice(0, limit) : page2,
+					pin: async () => undefined,
+					view: async () => "",
+					undo: async () => [],
+					apply: async (name, change) => ({
+						id: `feed-${name}-${change.kind}`,
+						at: "2026-11-01T00:00:00.000Z",
+						actor: "curator",
+						action: change.kind,
+						skill: name,
+					}),
+				}),
+				undoReview: async () => 1,
+			});
+			const view = createCuratorView(host);
+			const result = await view.actions!["undoReview"](
+				ctxOf(ALICE, { review: "review-3" }),
+				{ itemId: "review-aa0001" },
+			);
+			expect(result).toMatchObject({ ok: true });
+			const undos = host.calls.filter(
+				(call) => call.method === "curation.undoReview",
+			);
+			expect(undos).toHaveLength(1);
+			expect(undos[0]?.args).toEqual([ALICE, "review-3"]);
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("a bare review id still undoes (the pre-upgrade coordinate)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {

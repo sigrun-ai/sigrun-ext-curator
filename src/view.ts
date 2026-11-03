@@ -300,6 +300,28 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 				if (itemId === undefined) {
 					return { ok: false, error: { message: "undoReview expects {itemId}" } };
 				}
+				// On a deep-link the param already names the review — and
+				// the group's sha may sit past page 1 of the feed, where
+				// the single-page lookup below cannot see it. Dispatch the
+				// param's review id directly.
+				const anchored = reviewParam(ctx);
+				if (anchored !== undefined) {
+					const reverted = await host.curation.undoReview(who.user, anchored);
+					const anchoredNotice = (await readNotices(host, who.user)).find(
+						(entry) => entry.reviewId === anchored,
+					);
+					if (anchoredNotice !== undefined) {
+						await host.clearAmbient(
+							anchoredNotice.conversationId,
+							CURATOR_NOTICE_KIND,
+							CONTEXT,
+						).catch(() => undefined);
+					}
+					return {
+						ok: true,
+						toast: reverted > 0 ? `Undid ${reverted} change(s)` : "Nothing to undo",
+					};
+				}
 				// The dispatch carries the GROUP key (`review-<sha>`, minted
 				// by groupFeed); core's undoReview matches entry.reviewId.
 				// Resolve the sha back to the review id through the feed — a
