@@ -249,12 +249,23 @@ export function createLoop1(deps: Loop1Deps): {
 			...(focus === undefined ? {} : { focus }),
 		});
 
-		// The parent abort: any activity on the parent while the review
-		// runs fires the signal — the review reviews the conversation it
-		// saw (the host-side driver re-checks the same state itself).
+		// The parent abort: CHURN on the parent while the review runs
+		// fires the signal — the review reviews the conversation it saw
+		// (the host-side driver re-checks the same state itself). The
+		// watch's first frame is the acquisition snapshot (the baseline),
+		// never churn; only a frame carrying MORE model entries than the
+		// baseline means the parent actually moved. A re-rendered view
+		// (a status refresh at the same entry count) is not churn and
+		// must not kill an in-flight review (the coarse-abort ruling).
 		const abort = new AbortController();
-		const stopWatch = await deps.host.conversations.watch(id, () => {
-			abort.abort();
+		let baseline: number | undefined;
+		const stopWatch = await deps.host.conversations.watch(id, (view) => {
+			const count = view.entries.length;
+			if (baseline === undefined) {
+				baseline = count; // the snapshot is the baseline, never churn
+				return;
+			}
+			if (count > baseline) abort.abort();
 		});
 		let result: CurationRunResult;
 		try {
