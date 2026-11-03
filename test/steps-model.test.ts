@@ -323,7 +323,7 @@ describe("overlay unsure", () => {
 			expect(creates).toHaveLength(3); // the two fixtures + the question conversation
 			expect(creates[2].args[0]).toMatchObject({ owner: ALICE });
 			const callId = seeds[0].args[1] as string;
-			const record = host.interactions.get(`${recent}:${callId}`)!;
+			const record = host.interactions.get(`${askedIn}:${callId}`)!;
 			expect(record.kind).toBe(CURATOR_OVERLAY_QUESTION_KIND);
 			expect(record.status).toBe("pending");
 			// `details` carries what the settled handler needs: whose overlay,
@@ -354,13 +354,13 @@ describe("overlay unsure", () => {
 			expect(puts).toEqual([]);
 
 			// The user answers KEEP; the settled handler applies it.
-			await host.answerInteraction(recent, callId, { values: { verdict: "keep" } }, CONTEXT);
+			await host.answerInteraction(askedIn as ConversationId, callId, { values: { verdict: "keep" } }, CONTEXT);
 			// The lifecycle event carries the STORED answer values directly.
 			const answers = overlayQuestionHandler(host);
 			const onSettled = answers.interactionSettled!;
 			await onSettled(
 				{
-					conversationId: recent as ConversationId,
+					conversationId: askedIn as ConversationId,
 					callId,
 					kind: CURATOR_OVERLAY_QUESTION_KIND,
 					status: "answered",
@@ -378,24 +378,25 @@ describe("overlay unsure", () => {
 		}
 	});
 
-	test("a drop answer removes the overlay; a non-answered settle changes nothing", async () => {
-		const { host, recent, removes, puts } = await setupUnsure();
+	test("a drop answer removes the overlay; a non-answered settle drops the question and changes nothing", async () => {
+		const { host, removes, puts } = await setupUnsure();
 		try {
 			scriptDigestRuns(host, [completed('{"verdict":"unsure"}')]);
 			await recheckOverlays(stepDeps(host, 12));
-			const callId = [...host.interactions.keys()]
-				.map((k) => k.split(":"))
-				.filter(([id]) => Number(id) === recent)
-				.map(([, call]) => call)[0];
+			const seeds = host.calls.filter((call) => call.method === "seedInteraction");
+			expect(seeds).toHaveLength(1);
+			const askedIn = seeds[0].args[0] as number;
+			const callId = seeds[0].args[1] as string;
 
-			// Expired (a terminal non-answer): no change.
+			// Cancelled (a terminal non-answer): the question leaves the
+			// file, the overlay changes nothing.
 			const handler = overlayQuestionHandler(host).interactionSettled!;
 			await handler(
 				{
-					conversationId: recent as ConversationId,
+					conversationId: askedIn as ConversationId,
 					callId,
 					kind: CURATOR_OVERLAY_QUESTION_KIND,
-					status: "expired",
+					status: "cancelled",
 					owner: ALICE,
 				},
 				API,
@@ -403,12 +404,30 @@ describe("overlay unsure", () => {
 			);
 			expect(removes).toEqual([]);
 			expect(puts).toEqual([]);
+			const file = (await readState(host, "overlay-questions.json")) as {
+				questions: Record<string, unknown>;
+			};
+			expect(Object.keys(file.questions)).toEqual([]);
+		} finally {
+			await host.close();
+		}
+	});
 
-			// Answer DROP, then settle: removed.
-			await host.answerInteraction(recent, callId, { values: { verdict: "drop" } }, CONTEXT);
+	test("a drop answer removes the overlay and the question leaves the file", async () => {
+		const { host, removes, puts } = await setupUnsure();
+		try {
+			scriptDigestRuns(host, [completed('{"verdict":"unsure"}')]);
+			await recheckOverlays(stepDeps(host, 12));
+			const seeds = host.calls.filter((call) => call.method === "seedInteraction");
+			const askedIn = seeds[0].args[0] as number;
+			const callId = seeds[0].args[1] as string;
+
+			// Answer DROP, then settle: removed, and the entry is gone.
+			await host.answerInteraction(askedIn as ConversationId, callId, { values: { verdict: "drop" } }, CONTEXT);
+			const handler = overlayQuestionHandler(host).interactionSettled!;
 			await handler(
 				{
-					conversationId: recent as ConversationId,
+					conversationId: askedIn as ConversationId,
 					callId,
 					kind: CURATOR_OVERLAY_QUESTION_KIND,
 					status: "answered",
@@ -419,6 +438,11 @@ describe("overlay unsure", () => {
 				CONTEXT,
 			);
 			expect(removes).toEqual(["acme-unsure"]);
+			expect(puts).toEqual([]);
+			const file = (await readState(host, "overlay-questions.json")) as {
+				questions: Record<string, unknown>;
+			};
+			expect(Object.keys(file.questions)).toEqual([]);
 		} finally {
 			await host.close();
 		}
