@@ -27,9 +27,9 @@
  * step) drains the queue, one `digestRun` per drifted key, and applies
  * the run's verdict — keep (re-anchor the same text on the new hash),
  * drop (remove), rewrite (put the verdict's new text), or unsure (ONE
- * `curator.overlay-question` interaction in the user's most recent
- * owned conversation, applied by `overlayQuestionHandler` from
- * `interactionSettled`). An unparseable verdict changes nothing.
+ * `curator.overlay-question` interaction per skill in ONE new
+ * user-owned conversation per pass, applied by `overlayQuestionHandler`
+ * from `interactionSettled`). An unparseable verdict changes nothing.
  */
 
 import { randomUUID } from "node:crypto";
@@ -177,45 +177,93 @@ interface QuestionDetails {
 	readonly callId: string;
 }
 
+/** A v2 question: the details plus the conversation it was asked in. */
+interface StoredQuestion extends QuestionDetails {
+	readonly conversationId: number;
+}
+
+/** The pending-questions file's parsed shape (v2; a legacy top-level
+ *  array reads as all-`legacy`). `questions` is keyed by `keyId(key)` —
+ *  one open question per skill; `legacy` holds pre-v2 questions (no
+ *  conversation, so they can't be cancelled) and only ever shrinks. */
+interface PendingQuestionsFile {
+	readonly questions: Record<string, StoredQuestion>;
+	readonly legacy: readonly QuestionDetails[];
+}
+
 /** The overlay re-check's allow list: it writes nothing itself. */
 const RECHECK_ALLOW: readonly string[] = ["skill_manage"];
 
 /** The pending questions file under the user's state dir. */
 const PENDING_QUESTIONS_FILE = "overlay-questions.json";
 
-/** Read the user's pending overlay questions; absent/malformed → []. */
-async function readPendingQuestions(
-	host: SigrunHost,
-	user: string,
-): Promise<QuestionDetails[]> {
-	const parsed = await readStateJson<unknown>(
-		join(host.stores.user(user).paths.state, PENDING_QUESTIONS_FILE),
-		[],
-	);
-	if (!Array.isArray(parsed)) return [];
-	return parsed.filter(
-			(entry): entry is QuestionDetails =>
-				typeof entry === "object" &&
-				entry !== null &&
-				typeof (entry as QuestionDetails).user === "string" &&
-				typeof (entry as QuestionDetails).key?.root === "string" &&
-				typeof (entry as QuestionDetails).key?.skill === "string" &&
-				typeof (entry as QuestionDetails).upstreamHash === "string" &&
-				typeof (entry as QuestionDetails).overlayText === "string" &&
-				typeof (entry as QuestionDetails).callId === "string",
+/** Structural check: one parsed entry is a QuestionDetails. */
+function isQuestion(entry: unknown): entry is QuestionDetails {
+	return (
+		typeof entry === "object" &&
+		entry !== null &&
+		typeof (entry as QuestionDetails).user === "string" &&
+		typeof (entry as QuestionDetails).key?.root === "string" &&
+		typeof (entry as QuestionDetails).key?.skill === "string" &&
+		typeof (entry as QuestionDetails).upstreamHash === "string" &&
+		typeof (entry as QuestionDetails).overlayText === "string" &&
+		typeof (entry as QuestionDetails).callId === "string"
 	);
 }
 
-/** Write the user's pending overlay questions. */
+/** Read the user's pending overlay questions (absent/malformed → empty;
+ *  a legacy top-level ARRAY reads as v1: every entry lands in `legacy`
+ *  unchanged). The write shape is always v2. */
+async function readPendingQuestions(
+	host: SigrunHost,
+	user: string,
+): Promise<PendingQuestionsFile> {
+	const parsed = await readStateJson<unknown>(
+		join(host.stores.user(user).paths.state, PENDING_QUESTIONS_FILE),
+		{ v: 2, questions: {}, legacy: [] },
+	);
+	if (Array.isArray(parsed)) {
+		return { questions: {}, legacy: parsed.filter(isQuestion) };
+	}
+	if (typeof parsed !== "object" || parsed === null) {
+		return { questions: {}, legacy: [] };
+	}
+	const raw = parsed as {
+		readonly questions?: unknown;
+		readonly legacy?: unknown;
+	};
+	const questions: Record<string, StoredQuestion> = {};
+	if (
+		typeof raw.questions === "object" &&
+		raw.questions !== null &&
+		!Array.isArray(raw.questions)
+	) {
+		for (const [id, entry] of Object.entries(raw.questions)) {
+			if (
+				isQuestion(entry) &&
+				typeof (entry as StoredQuestion).conversationId === "number"
+			) {
+				questions[id] = entry as StoredQuestion;
+			}
+		}
+	}
+	const legacy = Array.isArray(raw.legacy)
+		? raw.legacy.filter(isQuestion)
+		: [];
+	return { questions, legacy };
+}
+
+/** Write the user's pending overlay questions (the v2 shape — legacy
+ *  questions keep their entries but the file is v2 from here on). */
 async function writePendingQuestions(
 	host: SigrunHost,
 	user: string,
-	questions: readonly QuestionDetails[],
+	file: PendingQuestionsFile,
 ): Promise<void> {
 	await writeStateJson(
 		host.stores.user(user).paths.state,
 		PENDING_QUESTIONS_FILE,
-		questions,
+		{ v: 2, questions: file.questions, legacy: file.legacy },
 	);
 }
 
@@ -240,9 +288,12 @@ export async function recheckOverlays(deps: ModelStepDeps): Promise<boolean> {
 	const log = stepLog(deps);
 	if (deps.budget.left() < 1) return false; // the day is spent: stop the pass
 	const keys = [...(await new OverlayRecheckQueue(host, user).take())];
+	// ONE lazily created question conversation for the whole pass (spec
+	// §5.6: one conversation per recheck call, not one per question).
+	const conversation: QuestionConversation = { promised: undefined, seeded: 0 };
 	for (const key of keys) {
 		if (deps.now().getTime() >= deps.deadlineAt) return false;
-		const applied = await recheckOne(deps, key).catch((error: unknown) => {
+		const applied = await recheckOne(deps, key, conversation).catch((error: unknown) => {
 			log(
 				`loop 2: ${user} overlay re-check of ${key.skill} failed: ${
 					error instanceof Error ? error.message : String(error)
@@ -256,7 +307,7 @@ export async function recheckOverlays(deps: ModelStepDeps): Promise<boolean> {
 }
 
 /** Re-check one key: run, parse the verdict, apply it. */
-async function recheckOne(deps: ModelStepDeps, key: CurationOverlayKey): Promise<boolean> {
+async function recheckOne(deps: ModelStepDeps, key: CurationOverlayKey, conversation: QuestionConversation): Promise<boolean> {
 	const { host, user } = deps;
 	const store = host.curation.overlays(user);
 	const overlay = await store.get(key);
@@ -287,7 +338,7 @@ async function recheckOne(deps: ModelStepDeps, key: CurationOverlayKey): Promise
 			await store.put(key, verdict.text, upstream.hash, meta);
 			return true;
 		case "unsure":
-			await askOverlayQuestion(deps, key, overlay.text, upstream.hash);
+			await askOverlayQuestion(deps, key, overlay.text, upstream.hash, conversation);
 			return true;
 		default:
 			return true; // unknown verdict word: no change
@@ -324,29 +375,97 @@ function recheckInput(
  *  caller signal — the job's deadline is the bound that matters). */
 const SEED_CONTEXT: HandlerContext = { abortSignal: undefined };
 
+/** The lazily created question conversation one recheck pass shares. */
+interface QuestionConversation {
+	/** The create in flight or done; absent until the first question. */
+	promised: Promise<ConversationId> | undefined;
+	/** How many questions the conversation holds so far (for its title). */
+	seeded: number;
+}
+
+/** The conversation's title: named for what it holds. */
+function questionConversationTitle(seeded: number, skill?: string): string {
+	return seeded === 1 && skill !== undefined
+		? `Your notes on "${skill}"`
+		: `Your notes on ${seeded} skills`;
+}
+
+/** The id of the pass's question conversation, creating it on the
+ *  first question (owned by the user, titled for what it holds). */
+async function questionConversation(
+	deps: ModelStepDeps,
+	conversation: QuestionConversation,
+	skill: string,
+): Promise<ConversationId> {
+	if (conversation.promised === undefined) {
+		conversation.seeded = 1;
+		conversation.promised = deps.host.conversations.create({
+			owner: deps.user,
+			name: questionConversationTitle(1, skill),
+		});
+		return conversation.promised;
+	}
+	const id = await conversation.promised;
+	conversation.seeded += 1;
+	// A second question renames the conversation to cover what it now
+	// holds; a failed rename never loses the question (logged only).
+	try {
+		await deps.host.conversations.patchMeta(id, {
+			name: questionConversationTitle(conversation.seeded),
+		});
+	} catch (error: unknown) {
+		stepLog(deps)(
+			`loop 2: renaming the overlay-question conversation failed: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+	return id;
+}
+
 /**
- * Seed ONE `curator.overlay-question` in the user's MOST RECENT owned
- * conversation and remember it durably (the settled handler needs the
- * overlay text and hash — the interaction's `details` carry them, and
- * the pending-questions file is the crash-safe copy: an answered
- * question whose apply crashed re-applies on the next handler fire).
+ * Ask ONE `curator.overlay-question` for a drifted overlay: the pass's
+ * shared NEW conversation (created lazily, owned by the user) gets the
+ * question, and the pending file keeps one open question per skill —
+ * the bounding rule (spec §5.5, ruling 8: no timers, no auto-expiry;
+ * keying and terminal statuses bound the file, never age).
+ *
+ * Order per question: create the conversation if needed, cancel the
+ * skill's old open question (a re-ask replaces it; a GONE old
+ * conversation — settle resolves false or rejects — still lets the new
+ * question be asked), seed, write the file. Only then, for the first
+ * question of the pass, send the owner a notice linking to the
+ * conversation; a FAILED notice never loses the question (try/catch-log).
  */
 async function askOverlayQuestion(
 	deps: ModelStepDeps,
 	key: CurationOverlayKey,
 	overlayText: string,
 	upstreamHash: string,
+	conversation: QuestionConversation,
 ): Promise<void> {
 	const { host, user } = deps;
-	const owned = await host.conversations.list({ owner: user });
-	const withActivity = owned
-		.filter((row) => row.lastActivityAt !== undefined)
-		.sort(
-			(a, b) =>
-				Date.parse(b.lastActivityAt!) - Date.parse(a.lastActivityAt!),
-		);
-	const target = withActivity[0] ?? owned[owned.length - 1];
-	if (target === undefined) return; // no owned conversation to ask in
+	const log = stepLog(deps);
+	const file = await readPendingQuestions(host, user);
+	const id = keyId(key);
+	const old = file.questions[id];
+	const conversationId = await questionConversation(deps, conversation, key.skill);
+	if (old !== undefined) {
+		try {
+			await host.settleInteraction(
+				old.conversationId as ConversationId,
+				old.callId,
+				"cancelled",
+				SEED_CONTEXT,
+			);
+		} catch (error: unknown) {
+			log(
+				`loop 2: cancelling the previous overlay question for ${key.skill} failed: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	}
 	const callId = `overlay-question-${randomUUID()}`;
 	const details: QuestionDetails = {
 		user,
@@ -365,16 +484,30 @@ async function askOverlayQuestion(
 		// contract; the structural QuestionDetails shape is JSON-safe.
 		details: details as unknown as InteractionRecord["details"],
 	};
-	await host.seedInteraction(
-		target.id as ConversationId,
-		record,
-		SEED_CONTEXT,
-	);
-	await writePendingQuestions(
-		host,
-		user,
-		[...(await readPendingQuestions(host, user)).filter((q) => q.callId !== callId), details],
-	);
+	await host.seedInteraction(conversationId, record, SEED_CONTEXT);
+	await writePendingQuestions(host, user, {
+		questions: {
+			...file.questions,
+			[id]: { ...details, conversationId: conversationId as number },
+		},
+		legacy: file.legacy,
+	});
+	if (conversation.seeded !== 1) return; // only the first question notifies
+	try {
+		await host.notify({
+			user,
+			title: "Notes to review",
+			body: `The curator has a question about your notes on "${key.skill}".`,
+			kind: CURATOR_OVERLAY_QUESTION_KIND,
+			target: { conversation: conversationId as number },
+		});
+	} catch (error: unknown) {
+		log(
+			`loop 2: the overlay-question notice for ${user} failed: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
 }
 
 /** The question's form body: exactly keep / drop. The overlay text
@@ -416,11 +549,15 @@ function questionBody(
 
 /**
  * The `interactionSettled` half: apply a settled overlay question's
- * answer. Only ANSWERED records with a `verdict` of keep/drop apply;
- * every other terminal status (skipped, expired, cancelled) changes
- * nothing. `keep` re-anchors the remembered overlay text on the
- * remembered hash; `drop` removes the overlay. Idempotent per callId
- * (an applied question leaves the pending file).
+ * answer. EVERY terminal status (answered, skipped, cancelled, expired)
+ * drops the entry from the pending file — the file is bounded by
+ * terminal statuses (one open entry per skill key). Only ANSWERED
+ * records with a `verdict` of keep/drop apply; `keep` re-anchors the
+ * remembered overlay text on the remembered hash; `drop` removes the
+ * overlay. The callId is looked up in BOTH the v2 `questions` map and
+ * the migrated `legacy` list, so pre-v2 questions stay answerable
+ * where they were asked. Idempotent per callId (an applied question
+ * leaves the pending file).
  */
 export function overlayQuestionHandler(
 	host: SigrunHost,
@@ -432,55 +569,72 @@ export function overlayQuestionHandler(
 			_context: HandlerContext,
 		): Promise<void> => {
 			if (event.kind !== CURATOR_OVERLAY_QUESTION_KIND) return;
-			if (event.status !== "answered") return;
-			const verdict = event.answer?.["verdict"];
-			if (verdict !== "keep" && verdict !== "drop") return;
-			const questions = await readQuestionsFor(host, event.callId);
-			for (const question of questions) {
-				const store = host.curation.overlays(question.user);
-			const meta = {
-				actor: "curator" as const,
-				reason: `user chose to ${verdict} the overlay`,
-			};
-			if (verdict === "keep") {
-				await store.put(
-					question.key,
-					question.overlayText,
-					question.upstreamHash,
-					meta,
-				);
-			} else {
-				await store.remove(question.key, meta);
+			if (event.status !== "answered" &&
+				event.status !== "skipped" &&
+				event.status !== "cancelled" &&
+				event.status !== "expired") return;
+			const found = await findQuestion(host, event.callId);
+			if (found === undefined) return;
+			const { user, question } = found;
+			if (event.status === "answered") {
+				const verdict = event.answer?.["verdict"];
+				if (verdict === "keep" || verdict === "drop") {
+					const store = host.curation.overlays(user);
+					const meta = {
+						actor: "curator" as const,
+						reason: `user chose to ${verdict} the overlay`,
+					};
+					if (verdict === "keep") {
+						await store.put(
+							question.key,
+							question.overlayText,
+							question.upstreamHash,
+							meta,
+						);
+					} else {
+						await store.remove(question.key, meta);
+					}
+				}
 			}
-			await dropQuestion(host, question.user, question.callId);
-		}
+			await dropQuestion(host, user, question.callId);
 		},
 	};
 }
 
-/** Read one user's pending questions — the handler scans every user's
- *  file (the event names the callId, not the user). */
-async function readQuestionsFor(
+/** Find one pending question by callId — the handler scans every user's
+ *  file (the event names the callId, not the user), both the v2
+ *  `questions` map and the migrated `legacy` list. */
+async function findQuestion(
 	host: SigrunHost,
 	callId: string,
-): Promise<QuestionDetails[]> {
-	const found: QuestionDetails[] = [];
+): Promise<{ readonly user: string; readonly question: QuestionDetails } | undefined> {
 	for (const row of await host.users.list()) {
-		for (const question of await readPendingQuestions(host, row.user)) {
-			if (question.callId === callId) found.push(question);
+		const file = await readPendingQuestions(host, row.user);
+		for (const question of Object.values(file.questions)) {
+			if (question.callId === callId) return { user: row.user, question };
+		}
+		for (const question of file.legacy) {
+			if (question.callId === callId) return { user: row.user, question };
 		}
 	}
-	return found;
+	return undefined;
 }
 
-/** Remove an applied question from its user's pending file. */
+/** Remove a question from its user's pending file — from BOTH the v2
+ *  map (by matching callId, in case the file drifted) and the legacy
+ *  list. */
 async function dropQuestion(
 	host: SigrunHost,
 	user: string,
 	callId: string,
 ): Promise<void> {
-	const remaining = (await readPendingQuestions(host, user)).filter(
-		(question) => question.callId !== callId,
-	);
-	await writePendingQuestions(host, user, remaining);
+	const file = await readPendingQuestions(host, user);
+	const questions: Record<string, StoredQuestion> = {};
+	for (const [id, question] of Object.entries(file.questions)) {
+		if (question.callId !== callId) questions[id] = question;
+	}
+	await writePendingQuestions(host, user, {
+		questions,
+		legacy: file.legacy.filter((question) => question.callId !== callId),
+	});
 }

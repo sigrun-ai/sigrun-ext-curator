@@ -27,9 +27,9 @@
  * step) drains the queue, one `digestRun` per drifted key, and applies
  * the run's verdict — keep (re-anchor the same text on the new hash),
  * drop (remove), rewrite (put the verdict's new text), or unsure (ONE
- * `curator.overlay-question` interaction in the user's most recent
- * owned conversation, applied by `overlayQuestionHandler` from
- * `interactionSettled`). An unparseable verdict changes nothing.
+ * `curator.overlay-question` interaction per skill in ONE new
+ * user-owned conversation per pass, applied by `overlayQuestionHandler`
+ * from `interactionSettled`). An unparseable verdict changes nothing.
  */
 import type { CurationOverlayKey, SigrunHost, SigrunLifecycleHandlers } from "@sigrun/sigrun/extension";
 import { type ModelStepDeps } from "./run.js";
@@ -79,10 +79,14 @@ export declare function detectOverlayDrift(host: SigrunHost, user: string): Prom
 export declare function recheckOverlays(deps: ModelStepDeps): Promise<boolean>;
 /**
  * The `interactionSettled` half: apply a settled overlay question's
- * answer. Only ANSWERED records with a `verdict` of keep/drop apply;
- * every other terminal status (skipped, expired, cancelled) changes
- * nothing. `keep` re-anchors the remembered overlay text on the
- * remembered hash; `drop` removes the overlay. Idempotent per callId
- * (an applied question leaves the pending file).
+ * answer. EVERY terminal status (answered, skipped, cancelled, expired)
+ * drops the entry from the pending file — the file is bounded by
+ * terminal statuses (one open entry per skill key). Only ANSWERED
+ * records with a `verdict` of keep/drop apply; `keep` re-anchors the
+ * remembered overlay text on the remembered hash; `drop` removes the
+ * overlay. The callId is looked up in BOTH the v2 `questions` map and
+ * the migrated `legacy` list, so pre-v2 questions stay answerable
+ * where they were asked. Idempotent per callId (an applied question
+ * leaves the pending file).
  */
 export declare function overlayQuestionHandler(host: SigrunHost): Pick<SigrunLifecycleHandlers, "interactionSettled">;
