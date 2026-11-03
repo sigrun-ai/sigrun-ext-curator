@@ -265,7 +265,22 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 				if (reviewId === undefined) {
 					return { ok: false, error: { message: "undoReview expects {itemId}" } };
 				}
-				const reverted = await host.curation.undoReview(who.user, reviewId);
+				// A failing undo (the store's pruned-snapshot report, or a
+				// host error) is a named action error — never a thrown action
+				// the surface layer renders generically. The store's message
+				// names exactly what could not revert.
+				let reverted: number;
+				try {
+					reverted = await host.curation.undoReview(who.user, reviewId);
+				} catch (cause) {
+					return {
+						ok: false,
+						error: {
+							message:
+								cause instanceof Error ? cause.message : String(cause),
+						},
+					};
+				}
 				// Clear the notice this review set, when the ledger remembers
 				// one (a digest review with no notice clears nothing).
 				const notice = (await readNotices(host, who.user)).find(
