@@ -92,7 +92,6 @@ function scriptFeed(
 				skill: name,
 			}),
 		}),
-		undoReview: async () => 0,
 	});
 }
 
@@ -257,12 +256,81 @@ describe("the curator view", () => {
 		}
 	});
 
+	test("undo resolves the group sha back to the review id before dispatch", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const conversation = (await host.conversations.create({
+				owner: ALICE,
+			})) as ConversationId;
+			// The feed's group key is review-<sha>; the review id lives on
+			// the feed entry (core matches review ids, never group keys).
+			scriptFeed(host, [
+				feedEntry("aa0001", { reviewId: "review-3", skill: "deploy-staging" }),
+			]);
+			// A completed review set its notice (the ledger keys on the
+			// review id too).
+			await notify(host, conversation, ALICE, {
+				status: "completed",
+				text: "saved",
+				changes: [
+					{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
+				],
+				reviewId: "review-3",
+			});
+			host.setCuration({ undoReview: async () => 1 });
+
+			const view = createCuratorView(host);
+			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
+				itemId: "review-aa0001",
+			});
+			expect(result).toMatchObject({ ok: true });
+
+			// The host received the RESOLVED review id — never the sha
+			// group key verbatim.
+			const undos = host.calls.filter(
+				(call) => call.method === "curation.undoReview",
+			);
+			expect(undos).toHaveLength(1);
+			expect(undos[0]?.args).toEqual([ALICE, "review-3"]);
+			// And the notice lookup used the same resolved id: the
+			// ambient record on the notice conversation cleared.
+			const cleared = host.calls.filter((call) => call.method === "clearAmbient");
+			expect(cleared).toHaveLength(1);
+			expect(cleared[0]?.args[0]).toBe(conversation);
+			expect(cleared[0]?.args[1]).toBe(CURATOR_NOTICE_KIND);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an undo group for a commit without a review undoes nothing", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [feedEntry("aa0009", { skill: "vendor-notes" })]);
+			const view = createCuratorView(host);
+			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
+				itemId: "review-aa0009",
+			});
+			// A lone commit has no review to revert — and the host is
+			// never asked.
+			expect(result).toEqual({ ok: true, toast: "Nothing to undo" });
+			expect(
+				host.calls.filter((call) => call.method === "curation.undoReview"),
+			).toHaveLength(0);
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("the view's Undo review reverts the review and clears the notice", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
 		try {
 			const conversation = (await host.conversations.create({
 				owner: ALICE,
 			})) as ConversationId;
+			scriptFeed(host, [
+				feedEntry("aa0001", { reviewId: "review-acme", skill: "deploy-staging" }),
+			]);
 			const undone: string[] = [];
 			let undoCount = 0;
 			host.setCuration({
@@ -287,10 +355,11 @@ describe("the curator view", () => {
 			const action = view.actions?.["undoReview"];
 			expect(action).toBeDefined();
 
-			// The feed's onActivate dispatch: {itemId: the review id}.
+			// The feed's onActivate dispatch: {itemId: the group key
+			// (review-<sha>)} — the handler resolves the review id.
 			const result = await action!(
 				ctxOf(ALICE),
-				{ itemId: "review-acme" },
+				{ itemId: "review-aa0001" },
 			);
 			expect(result).toMatchObject({ ok: true });
 
@@ -309,6 +378,7 @@ describe("the curator view", () => {
 	test("undo for a review without a recorded notice still reverts (nothing to clear)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
+			scriptFeed(host, [feedEntry("dd0001", { reviewId: "digest-old" })]);
 			const undone: string[] = [];
 			host.setCuration({
 				undoReview: async (user, reviewId) => {
@@ -318,7 +388,7 @@ describe("the curator view", () => {
 			});
 			const view = createCuratorView(host);
 			await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "digest-old",
+				itemId: "review-dd0001",
 			});
 			expect(undone).toEqual([`${ALICE}:digest-old`]);
 			expect(
@@ -338,6 +408,9 @@ describe("the curator view", () => {
 			host.setCuration({
 				undoReview: async () => 2,
 			});
+			scriptFeed(host, [
+				feedEntry("aa0001", { reviewId: "review-acme", skill: "deploy-staging" }),
+			]);
 			// The review set its notice (the ledger remembers the
 			// conversation); the ambient CLEAR then hiccups.
 			await notify(host, conversation, ALICE, {
@@ -354,7 +427,7 @@ describe("the curator view", () => {
 
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "review-acme",
+				itemId: "review-aa0001",
 			});
 
 			// The revert succeeded, so the reply is the undo toast — the
@@ -395,9 +468,12 @@ describe("the curator view", () => {
 			expect(anonymous.access).toBe("none");
 
 			// The per-user surface: bob's action runs against BOB's stores
-			// (nothing there), never alice's — the isolation is in WHO the
+			// (his own feed), never alice's — the isolation is in WHO the
 			// action writes for, not in a reject.
 			const undone: string[] = [];
+			scriptFeed(host, [], {
+				bob: [feedEntry("aa0001", { reviewId: "review-acme" })],
+			});
 			host.setCuration({
 				undoReview: async (user, reviewId) => {
 					undone.push(`${user}:${reviewId}`);
@@ -405,7 +481,7 @@ describe("the curator view", () => {
 				},
 			});
 			const bobs = await view.actions!["undoReview"](ctxOf(BOB), {
-				itemId: "review-acme",
+				itemId: "review-aa0001",
 			});
 			expect(bobs).toMatchObject({ ok: true });
 			expect(undone).toEqual([`${BOB}:review-acme`]);

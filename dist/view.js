@@ -34,9 +34,13 @@
  * set's item-scoped dispatches, which carry `{itemId}`:
  *
  * - `undoReview` — the feed collection's `onActivate`
- *   (`{itemId: reviewId}`): `host.curation.undoReview`, then
- *   `host.clearAmbient` on the notice conversation's `curator.notice`
- *   slot (the notice ledger in `src/notices.ts` remembers it);
+ *   (`{itemId: groupId}` where the group id is `review-<newest sha>`):
+ *   resolves the sha back to the entry's review id through the feed
+ *   (core's `undoReview` matches `entry.reviewId`, never the group
+ *   key), then `host.curation.undoReview`, then `host.clearAmbient` on
+ *   the notice conversation's `curator.notice` slot (the notice ledger
+ *   in `src/notices.ts` remembers it); a commit with no review id
+ *   answers "Nothing to undo" without calling the host;
  * - `setPaused` — the page header's pause button (a submit dispatching
  *   `{}`): toggles the user's `paused` setting, read live by both
  *   loops — pausing takes effect on the next event, restart-free.
@@ -192,9 +196,21 @@ export function createCuratorView(host) {
                 const who = callerOf(ctx);
                 if ("reject" in who)
                     return who.reject;
-                const reviewId = itemIdOf(payload);
-                if (reviewId === undefined) {
+                const itemId = itemIdOf(payload);
+                if (itemId === undefined) {
                     return { ok: false, error: { message: "undoReview expects {itemId}" } };
+                }
+                // The dispatch carries the GROUP key (`review-<sha>`, minted
+                // by groupFeed); core's undoReview matches entry.reviewId.
+                // Resolve the sha back to the review id through the feed — a
+                // verbatim dispatch would match nothing and silently revert 0.
+                const sha = itemId.startsWith("review-")
+                    ? itemId.slice("review-".length)
+                    : itemId;
+                const feed = await host.curation.skills(who.user).feed(VIEW_FEED_LIMIT);
+                const reviewId = feed.find((entry) => entry.id === sha)?.reviewId;
+                if (reviewId === undefined) {
+                    return { ok: true, toast: "Nothing to undo" };
                 }
                 const reverted = await host.curation.undoReview(who.user, reviewId);
                 // Clear the notice this review set, when the ledger remembers

@@ -34,9 +34,13 @@
  * set's item-scoped dispatches, which carry `{itemId}`:
  *
  * - `undoReview` — the feed collection's `onActivate`
- *   (`{itemId: reviewId}`): `host.curation.undoReview`, then
- *   `host.clearAmbient` on the notice conversation's `curator.notice`
- *   slot (the notice ledger in `src/notices.ts` remembers it);
+ *   (`{itemId: groupId}` where the group id is `review-<newest sha>`):
+ *   resolves the sha back to the entry's review id through the feed
+ *   (core's `undoReview` matches `entry.reviewId`, never the group
+ *   key), then `host.curation.undoReview`, then `host.clearAmbient` on
+ *   the notice conversation's `curator.notice` slot (the notice ledger
+ *   in `src/notices.ts` remembers it); a commit with no review id
+ *   answers "Nothing to undo" without calling the host;
  * - `setPaused` — the page header's pause button (a submit dispatching
  *   `{}`): toggles the user's `paused` setting, read live by both
  *   loops — pausing takes effect on the next event, restart-free.
