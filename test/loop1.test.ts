@@ -31,7 +31,7 @@ import type {
 	MemoryEventApi,
 	RunSettledEvent,
 } from "@sigrun/sigrun/extension";
-import { createFakeHost } from "./fake-host.js";
+import { createFakeHost, type FakeHost } from "./fake-host.js";
 import { Backoff } from "../src/backoff.js";
 import { createLoop1 } from "../src/loop1.js";
 import { ReviewQueue } from "../src/queue.js";
@@ -662,9 +662,12 @@ describe("loop 1: the fork-review decision", () => {
 			expect(signal).toBeDefined();
 			expect(signal?.aborted).toBe(false);
 
-			// A new run on the parent: any watch push while the review is
-			// in flight fires the abort signal.
-			host.pushView(id, {} as Parameters<typeof host.pushView>[1]);
+			// A new run on the parent: the watch snapshot establishes the
+			// baseline; a frame with MORE entries is genuine churn and fires
+			// the abort signal.
+			host.pushView(id, viewWith(1));
+			expect(signal?.aborted).toBe(false); // the snapshot is not churn
+			host.pushView(id, viewWith(2));
 			expect(signal?.aborted).toBe(true);
 
 			release();
@@ -674,4 +677,58 @@ describe("loop 1: the fork-review decision", () => {
 			await host.close();
 		}
 	});
+
+	test("a re-rendered view (no new entries) is not churn and never aborts", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			let signal: AbortSignal | undefined;
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let started!: () => void;
+			const startedGate = new Promise<void>((resolve) => {
+				started = resolve;
+			});
+			host.setCuration({
+				modelCallsSince: async () => 10,
+				takeHints: async () => [],
+				forkReview: async (_id, opts) => {
+					signal = opts.signal;
+					started();
+					await gate;
+					return COMPLETED;
+				},
+			});
+
+			const pending = fire(loop, host, answered(id));
+			await startedGate;
+			expect(signal?.aborted).toBe(false);
+
+			// Snapshot, then repeated re-renders at the same entry count
+			// (a status refresh, a re-served frame): none of it is churn.
+			host.pushView(id, viewWith(3));
+			host.pushView(id, viewWith(3));
+			host.pushView(id, viewWith(3));
+			expect(signal?.aborted).toBe(false);
+
+			release();
+			await pending;
+			await queue.idle();
+			expect(signal?.aborted).toBe(false);
+		} finally {
+			await host.close();
+		}
+	});
 });
+
+/** One minimal watch frame carrying `count` model entries. */
+type PushedView = Parameters<FakeHost["pushView"]>[1];
+function viewWith(count: number): PushedView {
+	return {
+		entries: Array.from({ length: count }, (_, index) => ({
+			id: index + 1,
+			kind: "pi.assistant",
+		})),
+	} as unknown as PushedView;
+}

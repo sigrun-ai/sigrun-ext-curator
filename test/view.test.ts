@@ -306,6 +306,34 @@ describe("the curator view", () => {
 		}
 	});
 
+	test("a rejecting undoReview action returns a named error (never a thrown action)", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			host.setCuration({
+				undoReview: async () => {
+					throw new Error(
+						"cannot undo patch acme-deploy: the version snapshot v4 was pruned — the change is no longer revertible",
+					);
+				},
+			});
+			const view = createCuratorView(host);
+			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
+				itemId: "review-acme",
+			});
+			// The named message reaches the user as the action's error,
+			// never the surface layer's generic failure.
+			expect(result).toEqual({
+				ok: false,
+				error: {
+					message:
+						"cannot undo patch acme-deploy: the version snapshot v4 was pruned — the change is no longer revertible",
+				},
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("a clearAmbient rejection after a successful undo still lands the undo toast", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
