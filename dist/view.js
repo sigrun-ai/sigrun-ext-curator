@@ -1,9 +1,23 @@
 /**
- * The curator view (`src/view.ts`, Task B5): the per-user surface the
- * notice navigates to — learned skills (name, description, last used,
- * pin toggle, archive/restore), overlays (orphaned flag), the change
- * feed (newest 50) grouped by review with an **Undo review** action,
- * and a pause switch.
+ * The curator view (`src/view.ts`, tabs+skills Task 13): the per-user
+ * surface the notice and the core Skills history link navigate to —
+ * the change FEED (newest 50) with an **Undo review** action per
+ * review, and a pause switch. Skill management (list, pin,
+ * archive/restore, overlays) moved to the core Skills view when it
+ * landed (core-views/skills.ts): this view lists no learned skills and
+ * no overlays any more, and its **Skills** page action navigates
+ * `{target:{view:{extension:"core", id:"skills"}}}`.
+ *
+ * A `review` param filters the feed to that review's commits (the core
+ * skills history's curator-commit link and the notice both navigate
+ * here with it). Feed entry ids are commit SHAs in the user's curation
+ * history repo (tabs+skills Task 9), so the undo groups key on the
+ * SHA, never on the review id: a review reverted through
+ * `host.curation.undoReview` needs every commit the review authored,
+ * and grouping by review id would merge two interleaved reviews into
+ * one undo. Actors render as their names — `curator`, `agent`, the
+ * user, and `outside sigrun` for catch-up commits the store itself
+ * did not author (the git trailer's actor name).
  *
  * Access follows `accessOf` (spec P8: "the user, plus the superuser as
  * with conversations"): the resource is the caller's OWN curation data,
@@ -17,19 +31,16 @@
  *
  * The actions (what an ambient record can never carry — a view's action
  * routes DO reach the extension). Per-item actions ride the block
- * set's item-scoped dispatches, which carry `{itemId}` (a card action
- * button's submit dispatches a `null` payload — it cannot name an
- * item, `onCheck`/`onActivate` can):
+ * set's item-scoped dispatches, which carry `{itemId}`:
  *
- * - `pin` — the skills collection's `checkable`/`onCheck`:
- *   `{itemId: skill, value}` → the skill store's `pin`;
- * - `toggleArchive` — the skills collection's `onActivate`
- *   (`{itemId: skill}`): reads the store's current state and archives
- *   or restores through `apply` (feed-recorded, undoable);
  * - `undoReview` — the feed collection's `onActivate`
- *   (`{itemId: reviewId}`): `host.curation.undoReview`, then
- *   `host.clearAmbient` on the notice conversation's `curator.notice`
- *   slot (the notice ledger in `src/notices.ts` remembers it);
+ *   (`{itemId: groupId}` where the group id is `review-<newest sha>`):
+ *   resolves the sha back to the entry's review id through the feed
+ *   (core's `undoReview` matches `entry.reviewId`, never the group
+ *   key), then `host.curation.undoReview`, then `host.clearAmbient` on
+ *   the notice conversation's `curator.notice` slot (the notice ledger
+ *   in `src/notices.ts` remembers it); a commit with no review id
+ *   answers "Nothing to undo" without calling the host;
  * - `setPaused` — the page header's pause button (a submit dispatching
  *   `{}`): toggles the user's `paused` setting, read live by both
  *   loops — pausing takes effect on the next event, restart-free.
@@ -45,6 +56,11 @@ import { CURATOR_NOTICE_KIND } from "./notices.js";
 import { parseCuratorSettings } from "./settings.js";
 /** How many feed entries the view lists (the brief: newest 50). */
 export const VIEW_FEED_LIMIT = 50;
+/** How many pages a `review` deep-link walks before giving up (the
+ *  link arrives from the core skills history at ANY depth; core's
+ *  own `feedOf` walks until the entries run out — this view bounds
+ *  the walk and says so when the bound elapses). */
+export const VIEW_FEED_MAX_PAGES = 3;
 /** The zero-signal context the ambient clear runs under. */
 const CONTEXT = { abortSignal: undefined };
 /**
@@ -60,83 +76,97 @@ export function viewAccess(principal, user) {
         return "none";
     return accessOf({ user: principal.user, superuser: principal.service }, { owner: user });
 }
-/** Group a feed by review: entries sharing a reviewId form one group
- *  (the feed's newest-first order preserved, outside and inside). An
- *  entry with no reviewId (user pins, direct edits) groups alone. */
+/** One actor's display name (the git trailer's name: outside
+ *  catch-up commits render as "outside sigrun"). */
+export function actorLabel(entry) {
+    return entry.actor === "outside" ? "outside sigrun" : entry.actor;
+}
+/** Group a feed for undo: entries SHARING A REVIEW ID AND ADJACENT in
+ *  the newest-first feed form one group — the group's id is its newest
+ *  commit sha (`review-<sha>`). Keying on the sha (never the review
+ *  id) keeps two interleaved reviews apart: undoing one must revert
+ *  exactly the commits it authored. An entry with no reviewId groups
+ *  alone (a lone commit is never undoable as a review). */
 export function groupFeed(feed) {
-    const groups = new Map();
+    const groups = [];
+    let current;
+    let currentReview;
     for (const entry of feed) {
-        const key = entry.reviewId ?? entry.id;
         const row = {
             id: entry.id,
             skill: entry.skill,
             action: entry.action,
             at: entry.at,
+            actor: actorLabel(entry),
             ...(entry.reason === undefined ? {} : { reason: entry.reason }),
         };
-        const existing = groups.get(key);
-        if (existing === undefined) {
-            groups.set(key, { id: key, at: entry.at, entries: [row] });
+        if (entry.reviewId !== undefined &&
+            current !== undefined &&
+            currentReview === entry.reviewId) {
+            current = { ...current, entries: [...current.entries, row] };
+            groups[groups.length - 1] = current;
         }
         else {
-            groups.set(key, { ...existing, entries: [...existing.entries, row] });
+            current = {
+                id: `review-${entry.id}`,
+                at: entry.at,
+                entries: [row],
+            };
+            groups.push(current);
         }
+        currentReview = entry.reviewId;
     }
-    return [...groups.values()];
+    return groups;
 }
-/** A human label for one skill's last-used stamp ("never" or the date). */
-function lastUsedLabel(at) {
-    if (at === undefined)
-        return "never";
-    const date = new Date(at);
-    return Number.isNaN(date.getTime()) ? "never" : date.toISOString().slice(0, 10);
+/** The `review` param a render was anchored at (the core skills
+ *  history link and the notice navigate with it), or undefined. */
+function reviewParam(ctx) {
+    const review = ctx.params.review;
+    return typeof review === "string" && review !== "" ? review : undefined;
+}
+/** Read the feed: the plain view is the newest VIEW_FEED_LIMIT only
+ *  (the section's "newest 50" contract — every rendered group's sha
+ *  resolves for undo from that same page). A `review` deep-link pages
+ *  on (last sha as the cursor, core's feedOf shape, bounded) until
+ *  the review's entries appear or the walk elapses; a miss on ANY
+ *  exit path — short page or bound — is reported, never rendered as
+ *  the false "Nothing learned yet". */
+async function feedFor(host, user, review) {
+    const store = host.curation.skills(user);
+    const collected = [];
+    let before;
+    do {
+        const rows = await store.feed(VIEW_FEED_LIMIT, before);
+        collected.push(...rows);
+        if (rows.length < VIEW_FEED_LIMIT)
+            break; // the last page
+        if (review !== undefined &&
+            rows.some((entry) => entry.reviewId === review))
+            break; // the deep-link found its review
+        before = rows[rows.length - 1]?.id;
+    } while (review !== undefined && collected.length < VIEW_FEED_LIMIT * VIEW_FEED_MAX_PAGES);
+    return {
+        feed: collected,
+        reviewMissed: review !== undefined &&
+            !collected.some((entry) => entry.reviewId === review),
+    };
 }
 /** Build the view's data document for one user (the render's model). */
-async function readData(host, user) {
+async function readData(host, user, review) {
     const settings = parseCuratorSettings(await host.stores.user(user).settings.get());
-    const usage = await host.curation.usage(user);
-    const skills = await host.curation.skills(user).list();
-    const overlays = await host.curation.overlays(user).list();
-    const feed = await host.curation.skills(user).feed(VIEW_FEED_LIMIT);
+    const { feed, reviewMissed } = await feedFor(host, user, review);
     return {
         user,
         paused: settings.paused,
-        skills: [...skills]
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((row) => ({
-            id: row.name,
-            name: row.name,
-            description: row.description,
-            archived: row.archived,
-            pinned: row.pinned,
-            lastUsedLabel: lastUsedLabel(usage[row.name]),
-        })),
-        overlays: [...overlays]
-            .map((row) => ({
-            id: row.key.skill,
-            skill: row.key.skill,
-            root: row.key.root,
-            orphaned: row.orphanedSince !== undefined,
-        }))
-            .sort((a, b) => a.skill.localeCompare(b.skill)),
-        reviews: groupFeed(feed),
+        reviews: groupFeed(review === undefined
+            ? feed
+            : feed.filter((entry) => entry.reviewId === review)),
+        reviewMissed,
     };
 }
 /** Whether `payload` (an action's JSON argument) is a plain object. */
 function isObject(payload) {
     return typeof payload === "object" && payload !== null && !Array.isArray(payload);
-}
-/** The `{itemId, value}` dispatch an `onCheck` toggle carries. */
-function itemToggle(payload) {
-    if (!isObject(payload))
-        return undefined;
-    const itemId = payload.itemId;
-    const value = payload.value;
-    if (typeof itemId !== "string" || itemId === "")
-        return undefined;
-    if (typeof value !== "boolean")
-        return undefined;
-    return { itemId, value };
 }
 /** The `{itemId}` dispatch an `onActivate` click carries. */
 function itemIdOf(payload) {
@@ -174,7 +204,7 @@ export function createCuratorView(host) {
             if ("reject" in who) {
                 return { tree: emptyTree(), data: {}, access: "none" };
             }
-            const data = await readData(host, who.user);
+            const data = await readData(host, who.user, reviewParam(ctx));
             return {
                 tree: viewTree(data),
                 // SAFETY: the data document is a JSON mirror (every field a
@@ -190,7 +220,7 @@ export function createCuratorView(host) {
                 return { data: {}, access: "none" };
             return {
                 // SAFETY: same JSON-mirror cast as `render`'s (the comment there).
-                data: (await readData(host, who.user)),
+                data: (await readData(host, who.user, reviewParam(ctx))),
                 access: "write",
             };
         },
@@ -199,25 +229,64 @@ export function createCuratorView(host) {
                 const who = callerOf(ctx);
                 if ("reject" in who)
                     return who.reject;
-                const reviewId = itemIdOf(payload);
-                if (reviewId === undefined) {
+                const itemId = itemIdOf(payload);
+                if (itemId === undefined) {
                     return { ok: false, error: { message: "undoReview expects {itemId}" } };
                 }
-                // A failing undo (the store's pruned-snapshot report, or a
-                // host error) is a named action error — never a thrown action
-                // the surface layer renders generically. The store's message
-                // names exactly what could not revert.
+                // A failing undo (the store's report, or a host error) is a
+                // named action error — never a thrown action the surface
+                // layer renders generically (main's 774c660 semantics,
+                // kept through the git-history rework).
+                const fail = (cause) => ({
+                    ok: false,
+                    error: { message: cause instanceof Error ? cause.message : String(cause) },
+                });
+                // On a deep-link the param already names the review — and
+                // the group's sha may sit past page 1 of the feed, where
+                // the single-page lookup below cannot see it. Dispatch the
+                // param's review id directly.
+                const anchored = reviewParam(ctx);
+                if (anchored !== undefined) {
+                    let reverted;
+                    try {
+                        reverted = await host.curation.undoReview(who.user, anchored);
+                    }
+                    catch (cause) {
+                        return fail(cause);
+                    }
+                    const anchoredNotice = (await readNotices(host, who.user)).find((entry) => entry.reviewId === anchored);
+                    if (anchoredNotice !== undefined) {
+                        await host.clearAmbient(anchoredNotice.conversationId, CURATOR_NOTICE_KIND, CONTEXT).catch(() => undefined);
+                    }
+                    return {
+                        ok: true,
+                        toast: reverted > 0 ? `Undid ${reverted} change(s)` : "Nothing to undo",
+                    };
+                }
+                // The dispatch carries the GROUP key (`review-<sha>`, minted
+                // by groupFeed); core's undoReview matches entry.reviewId.
+                // Resolve the sha back to the review id through the feed — a
+                // verbatim dispatch would match nothing and silently revert 0.
+                // A bare review id (the pre-upgrade coordinate, and digest
+                // ids like "digest-<date>" that already carry the prefix) is
+                // the fallback when no entry's sha matches.
+                const sha = itemId.startsWith("review-")
+                    ? itemId.slice("review-".length)
+                    : itemId;
+                const feed = await host.curation.skills(who.user).feed(VIEW_FEED_LIMIT);
+                const reviewId = feed.find((entry) => entry.id === sha)?.reviewId ??
+                    (feed.some((entry) => entry.reviewId === itemId)
+                        ? itemId
+                        : undefined);
+                if (reviewId === undefined) {
+                    return { ok: true, toast: "Nothing to undo" };
+                }
                 let reverted;
                 try {
                     reverted = await host.curation.undoReview(who.user, reviewId);
                 }
                 catch (cause) {
-                    return {
-                        ok: false,
-                        error: {
-                            message: cause instanceof Error ? cause.message : String(cause),
-                        },
-                    };
+                    return fail(cause);
                 }
                 // Clear the notice this review set, when the ledger remembers
                 // one (a digest review with no notice clears nothing).
@@ -231,45 +300,6 @@ export function createCuratorView(host) {
                 return {
                     ok: true,
                     toast: reverted > 0 ? `Undid ${reverted} change(s)` : "Nothing to undo",
-                };
-            },
-            pin: async (ctx, payload) => {
-                const who = callerOf(ctx);
-                if ("reject" in who)
-                    return who.reject;
-                const toggle = itemToggle(payload);
-                if (toggle === undefined) {
-                    return { ok: false, error: { message: "pin expects {itemId, value}" } };
-                }
-                await host.curation.skills(who.user).pin(toggle.itemId, toggle.value);
-                return {
-                    ok: true,
-                    toast: toggle.value ? `Pinned ${toggle.itemId}` : `Unpinned ${toggle.itemId}`,
-                };
-            },
-            toggleArchive: async (ctx, payload) => {
-                const who = callerOf(ctx);
-                if ("reject" in who)
-                    return who.reject;
-                const name = itemIdOf(payload);
-                if (name === undefined) {
-                    return { ok: false, error: { message: "toggleArchive expects {itemId}" } };
-                }
-                // The current store state decides the direction: click an
-                // active skill → archive; click an archived one → restore.
-                const row = (await host.curation.skills(who.user).list()).find((skill) => skill.name === name);
-                if (row === undefined) {
-                    return { ok: false, error: { message: `unknown skill: ${name}` } };
-                }
-                const change = row.archived
-                    ? { kind: "restore" }
-                    : { kind: "archive" };
-                await host.curation
-                    .skills(who.user)
-                    .apply(name, change, { reason: `${change.kind === "archive" ? "archived" : "restored"} from the curator view` });
-                return {
-                    ok: true,
-                    toast: change.kind === "archive" ? `Archived ${name}` : `Restored ${name}`,
                 };
             },
             setPaused: async (ctx, payload) => {
@@ -310,7 +340,8 @@ function emptyTree() {
         },
     };
 }
-/** The view tree: header with the pause switch, skills, overlays, feed. */
+/** The view tree: header actions (pause switch + the Skills
+ *  link to the core view), then the feed grouped for undo. */
 function viewTree(data) {
     return {
         v: 1,
@@ -326,60 +357,19 @@ function viewTree(data) {
                     icon: data.paused ? "sun" : "moon",
                     action: { type: "submit", name: "setPaused" },
                 },
+                {
+                    id: "open-skills",
+                    label: "Skills",
+                    icon: "book",
+                    action: {
+                        type: "navigate",
+                        target: {
+                            view: { extension: "core", id: "skills" },
+                        },
+                    },
+                },
             ],
             main: [
-                {
-                    type: "section",
-                    id: "skills-section",
-                    title: "Learned skills",
-                    children: [
-                        {
-                            type: "markdown",
-                            text: "Toggle the checkbox to pin or unpin. Click a skill to archive it; click an archived one to restore.",
-                        },
-                        {
-                            type: "collection",
-                            id: "skills",
-                            display: "list",
-                            items: data.skills,
-                            checkable: "pinned",
-                            onCheck: "pin",
-                            onActivate: { type: "edit", name: "toggleArchive" },
-                            item: {
-                                title: { $: "./name" },
-                                subtitle: { $: "./description" },
-                                body: { $: "./lastUsedLabel" },
-                                badges: [
-                                    { text: "pinned", tone: "good" },
-                                    { text: "archived", tone: "neutral" },
-                                ],
-                            },
-                        },
-                    ],
-                },
-                {
-                    type: "section",
-                    id: "overlays-section",
-                    title: "Overlays",
-                    children: [
-                        data.overlays.length === 0
-                            ? {
-                                type: "markdown",
-                                text: "No overlays on upstream skills.",
-                            }
-                            : {
-                                type: "collection",
-                                id: "overlays",
-                                display: "list",
-                                items: data.overlays,
-                                item: {
-                                    title: { $: "./skill" },
-                                    subtitle: { $: "./root" },
-                                    badges: [{ text: "orphaned", tone: "warn" }],
-                                },
-                            },
-                    ],
-                },
                 {
                     type: "section",
                     id: "feed-section",
@@ -387,12 +377,14 @@ function viewTree(data) {
                     children: [
                         {
                             type: "markdown",
-                            text: "Click a review to undo every change it made.",
+                            text: "Click a review to undo every change it made. Outside sigrun marks catch-up commits made outside sigrun.",
                         },
                         data.reviews.length === 0
                             ? {
                                 type: "markdown",
-                                text: "Nothing learned yet. Use /learn to ask for a review now.",
+                                text: data.reviewMissed
+                                    ? "This review is older than the recent changes."
+                                    : "Nothing learned yet. Use /learn to ask for a review now.",
                             }
                             : {
                                 type: "collection",
@@ -402,7 +394,7 @@ function viewTree(data) {
                                     id: group.id,
                                     at: group.at,
                                     summary: group.entries
-                                        .map((entry) => `${entry.action} ${entry.skill}`)
+                                        .map((entry) => `${entry.action} ${entry.skill} (${entry.actor})`)
                                         .join(", "),
                                 })),
                                 onActivate: { type: "edit", name: "undoReview" },
