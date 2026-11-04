@@ -1,20 +1,23 @@
 /**
- * Task B5 tests: the post-review notice (`src/notices.ts`).
+ * Core-notices move tests (`src/notices.ts`, notices Task 9): the
+ * post-review "Learned:" notice is now a CORE per-user notice posted
+ * through `host.notices.post` — keyed `review:<reviewId>` (a re-run of
+ * one review REPLACES its notice), aimed at the review's owner,
+ * carrying the review's originating conversation id, with two actions:
+ * an **Undo** extension action (the declared `undoReview` handler,
+ * payload `{reviewId}`, a confirm prompt) and a **Review** navigate
+ * action to the curator view anchored at the review.
  *
- * The contract under test: a COMPLETED review with changes sets ONE
- * ambient record (`curator.notice`, place `status`) — one line per
- * change (`Learned: <summary>`) plus a `navigate` action to the curator
- * view anchored at the review — and a review with no changes sets
- * nothing. The notice is NEVER a transcript entry (no conversation
- * submit) and NEVER a notifier or channel delivery (the ambient seam is
- * the only carrier).
+ * The ambient seam keeps NO role in the notice itself: `setAmbient` is
+ * never called by `notify` any more (the one-time migration sweep
+ * clears the pre-move ambient notices instead — see the loop 2 sweep
+ * tests), and the per-user notices ledger file is gone (core's notice
+ * store owns durability now).
  *
- * The undo bookkeeping the view consumes is pinned here too: the notice
- * remembers the conversation it was set on, so the view's Undo review
- * action can clear exactly that conversation's notice. And the WIRING
- * is pinned: loop 1's completed review and loop 2's digest review both
- * fire `notify` themselves (a changed review announces, an unchanged
- * one does not).
+ * The wiring is pinned too: loop 1's completed review and loop 2's
+ * digest review both fire `notify` themselves (a changed review
+ * announces, an unchanged one does not), and a notice failure degrades
+ * to a missing notice, never a failed review/step.
  */
 
 import { describe, expect, test } from "vitest";
@@ -32,12 +35,11 @@ import type {
 	HandlerContext,
 	MemoryEventApi,
 	RunSettledEvent,
+	UserNoticeInput,
 } from "@sigrun/sigrun/extension";
-import { validateTree } from "@sigrun/sigrun/blocks";
-import type { ConversationViewWire } from "@sigrun/shared/views";
 import { createFakeHost } from "./fake-host.js";
-import { CURATOR_NOTICE_KIND, notify, readNotices } from "../src/notices.js";
-import type { NoticeRecord } from "../src/notices.js";
+import type { FakeHost } from "./fake-host.js";
+import { notify } from "../src/notices.js";
 import { Backoff } from "../src/backoff.js";
 import { createLoop1 } from "../src/loop1.js";
 import { ReviewQueue } from "../src/queue.js";
@@ -64,7 +66,7 @@ function noticeHint(n: number): CurationHint {
 
 /** Read one user's refunded-hints file (absent → rejects ENOENT). */
 async function pendingHintsRaw(
-	host: { stores: { user(user: string): { paths: { state: string } } } },
+	host: FakeHost,
 	user: string,
 ): Promise<string> {
 	return await readFile(
@@ -83,20 +85,17 @@ function reviewed(
 	return { status: "completed", text: "saved", changes };
 }
 
-/** The setAmbient calls the host recorded, narrowed to their specs. */
-function ambientWrites(
+/** The notices.post inputs the host recorded. */
+function postedNotices(
 	calls: readonly { method: string; args: readonly unknown[] }[],
-): { conversationId: number; spec: Record<string, unknown> }[] {
+): UserNoticeInput[] {
 	return calls
-		.filter((call) => call.method === "setAmbient")
-		.map((call) => ({
-			conversationId: call.args[0] as number,
-			spec: call.args[1] as Record<string, unknown>,
-		}));
+		.filter((call) => call.method === "notices.post")
+		.map((call) => call.args[0] as UserNoticeInput);
 }
 
-describe("notify (the post-review ambient notice)", () => {
-	test("a review with changes sets one ambient notice with a navigate action", async () => {
+describe("notify (the post-review core notice)", () => {
+	test("a review posts one keyed notice with Undo + Review", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
@@ -107,49 +106,84 @@ describe("notify (the post-review ambient notice)", () => {
 						summary: "updated `deploy-staging`",
 						target: "skills",
 					},
-					{
-						changeId: "chg-2",
-						summary: "noted the acme port quirk",
-						target: "memory:markdown",
-					},
 				]),
 				reviewId: "review-acme",
 			});
 
-			const writes = ambientWrites(host.calls);
-			expect(writes).toHaveLength(1);
-			const { spec } = writes[0];
-			expect(spec.key).toBe(CURATOR_NOTICE_KIND);
-			expect(spec.place).toBe("status");
-			// One line per change, each "Learned: <summary>".
-			const root = spec.body as { root: Record<string, unknown> };
-			expect(spec.body).toBeDefined();
-			const title = root.root.title;
-			expect(String(title)).toContain("Learned: updated `deploy-staging`");
-			expect(String(title)).toContain("Learned: noted the acme port quirk");
-			// A navigate action to the curator view anchored at the review.
-			const actions = (root.root.actions ?? []) as {
-				action: { type: string; target?: unknown };
-			}[];
-			expect(actions.length).toBeGreaterThan(0);
-			const navigate = actions.find((button) => button.action.type === "navigate");
-			expect(navigate).toBeDefined();
-			expect(JSON.stringify(navigate?.action.target)).toContain("curator");
-			expect(JSON.stringify(navigate?.action.target)).toContain("review-acme");
-			// The body passes the server's OWN ambient validation (the
-			// one-line rule for a status slot) — the exact walk the host
-			// runs on write.
-			const verdict = validateTree(spec.body, {
-				placement: "ambient",
-				ambientPlace: "status",
+			const posts = postedNotices(host.calls);
+			expect(posts).toHaveLength(1);
+			const notice = posts[0];
+			expect(notice.user).toBe(ALICE);
+			expect(notice.conversationId).toBe(id);
+			expect(notice.key).toBe("review:review-acme");
+			expect(notice.title).toBe("Learned: updated `deploy-staging`");
+			expect(notice.body).toBe("Open the curator view to review or undo.");
+			// Multiple changes join the one-line title.
+			expect(notice.actions).toHaveLength(2);
+
+			const undo = notice.actions?.find((action) => action.id === "undo");
+			expect(undo).toMatchObject({
+				label: "Undo",
+				kind: "extension",
+				name: "undoReview",
+				payload: { reviewId: "review-acme" },
+				confirm: "Undo every change this review made?",
 			});
-			expect(verdict.ok).toBe(true);
+
+			const review = notice.actions?.find((action) => action.id === "review");
+			expect(review).toMatchObject({
+				label: "Review",
+				kind: "navigate",
+				target: {
+					view: {
+						extension: "curator",
+						id: "curator",
+						params: { review: "review-acme" },
+					},
+				},
+			});
+
+			// The ambient seam carries NOTHING any more.
+			expect(
+				host.calls.some((call) => call.method === "setAmbient"),
+			).toBe(false);
 		} finally {
 			await host.close();
 		}
 	});
 
-	test("a completed review with no changes sets no notice", async () => {
+	test("a second review in the same conversation posts its own notice", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
+			await notify(host, id, ALICE, {
+				...reviewed([
+					{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
+				]),
+				reviewId: "review-one",
+			});
+			await notify(host, id, ALICE, {
+				...reviewed([
+					{ changeId: "chg-2", summary: "created `release-flow`", target: "skills" },
+				]),
+				reviewId: "review-two",
+			});
+
+			const posts = postedNotices(host.calls);
+			expect(posts).toHaveLength(2);
+			// Each review keys its OWN notice — a second review never
+			// replaces the first review's (they undo separately).
+			expect(posts.map((notice) => notice.key)).toEqual([
+				"review:review-one",
+				"review:review-two",
+			]);
+			expect(posts[1]?.title).toBe("Learned: created `release-flow`");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a review with no changes or no review id posts nothing", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
@@ -157,17 +191,6 @@ describe("notify (the post-review ambient notice)", () => {
 				...reviewed([]),
 				reviewId: "review-nothing",
 			});
-			expect(ambientWrites(host.calls)).toHaveLength(0);
-			expect(await readNotices(host, ALICE)).toEqual([]);
-		} finally {
-			await host.close();
-		}
-	});
-
-	test("a non-completed review with changes sets no notice", async () => {
-		const host = await createFakeHost({ users: [{ user: ALICE }] });
-		try {
-			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await notify(host, id, ALICE, {
 				status: "failed",
 				text: "",
@@ -177,69 +200,12 @@ describe("notify (the post-review ambient notice)", () => {
 				error: "upstream 502",
 				reviewId: "review-failed",
 			});
-			expect(ambientWrites(host.calls)).toHaveLength(0);
-		} finally {
-			await host.close();
-		}
-	});
-
-	test("the notice is never written to the transcript and never sent to a notifier", async () => {
-		const host = await createFakeHost({ users: [{ user: ALICE }] });
-		try {
-			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await notify(host, id, ALICE, {
 				...reviewed([
-					{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
+					{ changeId: "chg-1", summary: "orphan", target: "skills" },
 				]),
-				reviewId: "review-acme",
 			});
-
-			// No transcript entry: the notice never submits to the
-			// conversation (a fork would replay it otherwise).
-			expect(
-				host.calls.some((call) => call.method === "conversations.submit"),
-			).toBe(false);
-			// The ambient seam is the ONLY carrier: nothing that looks like a
-			// notifier or channel delivery was touched, and exactly one
-			// ambient write happened.
-			const methods = new Set(host.calls.map((call) => call.method));
-			expect(methods.has("setAmbient")).toBe(true);
-			for (const method of methods) {
-				expect(method).not.toMatch(/notif|channel|deliver/i);
-			}
-			expect(host.calls.filter((call) => call.method === "setAmbient")).toHaveLength(1);
-		} finally {
-			await host.close();
-		}
-	});
-
-	test("the notice records the conversation for the view's undo clear", async () => {
-		const host = await createFakeHost({ users: [{ user: ALICE }] });
-		try {
-			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
-			const result = await notify(host, id, ALICE, {
-				...reviewed([
-					{ changeId: "chg-1", summary: "created `release-flow`", target: "skills" },
-				]),
-				reviewId: "review-undo",
-			});
-
-			// notify answers the durable notice record the view's Undo
-			// action uses: which conversation's ambient to clear.
-			const record: NoticeRecord | undefined = result;
-			expect(record).toBeDefined();
-			expect(record?.conversationId).toBe(id);
-			expect(record?.reviewId).toBe("review-undo");
-			// The per-user notice file is durable: an undo after a restart
-			// still knows which conversation to clear.
-			expect(
-				(await readNotices(host, ALICE)).find(
-					(entry) => entry.reviewId === "review-undo",
-				),
-			).toMatchObject({
-				conversationId: id,
-				reviewId: "review-undo",
-			});
+			expect(postedNotices(host.calls)).toHaveLength(0);
 		} finally {
 			await host.close();
 		}
@@ -270,7 +236,7 @@ function answerMessage(): AssistantMessage {
 }
 
 describe("the loops fire notify on a changed review", () => {
-	test("loop 1's completed review with changes sets the notice; without changes it does not", async () => {
+	test("loop 1's completed review with changes posts the notice; without changes it does not", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
@@ -288,7 +254,7 @@ describe("the loops fire notify on a changed review", () => {
 				},
 			};
 
-			// With changes: one ambient notice naming the change.
+			// With changes: one posted notice naming the change.
 			host.setCuration({
 				modelCallsSince: async () => 10,
 				takeHints: async () => [],
@@ -299,8 +265,8 @@ describe("the loops fire notify on a changed review", () => {
 			});
 			await loop.onRunSettled(event, API, CONTEXT);
 			await queue.idle();
-			expect(ambientWrites(host.calls)).toHaveLength(1);
-			expect(ambientWrites(host.calls)[0]?.conversationId).toBe(id);
+			expect(postedNotices(host.calls)).toHaveLength(1);
+			expect(postedNotices(host.calls)[0]?.conversationId).toBe(id);
 
 			// Without changes: still exactly one notice overall (the second
 			// review added none).
@@ -311,13 +277,13 @@ describe("the loops fire notify on a changed review", () => {
 			});
 			await loop.onRunSettled(event, API, CONTEXT);
 			await queue.idle();
-			expect(ambientWrites(host.calls)).toHaveLength(1);
+			expect(postedNotices(host.calls)).toHaveLength(1);
 		} finally {
 			await host.close();
 		}
 	});
 
-	test("loop 2's digest review with changes sets the notice on the mixed conversation", async () => {
+	test("loop 2's digest review with changes posts the notice aimed at the mixed conversation", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
@@ -347,32 +313,28 @@ describe("the loops fire notify on a changed review", () => {
 				log: () => undefined,
 			};
 			const work = digestsStep(deps);
-			await (async () => {
-				await new Promise((resolve) => setTimeout(resolve, 20));
-			})();
-			const view: ConversationViewWire = {
-				conversation: { id },
-				entries: [
-					{ id: 10, kind: "pi.user", model: [{ role: "user", content: "acme advice" }] },
-				],
-				docs: {},
-				steer: { busy: false, queued: 0 },
-			} as never;
-			// Push the frame the step waits for.
 			const push = async () => {
 				for (let i = 0; i < 50; i += 1) {
 					if (host.calls.some((call) => call.method === "conversations.watch")) break;
 					await new Promise((resolve) => setTimeout(resolve, 10));
 				}
-				host.pushView(id, view);
+				host.pushView(id, {
+					conversation: { id },
+					entries: [
+						{ id: 10, kind: "pi.user", model: [{ role: "user", content: "acme advice" }] },
+					],
+					docs: {},
+					steer: { busy: false, queued: 0 },
+				} as never);
 			};
 			await push();
 			await work;
 
-			const writes = ambientWrites(host.calls);
-			expect(writes).toHaveLength(1);
-			expect(writes[0]?.conversationId).toBe(id);
-			expect((writes[0]?.spec as { key: string }).key).toBe(CURATOR_NOTICE_KIND);
+			const posts = postedNotices(host.calls);
+			expect(posts).toHaveLength(1);
+			expect(posts[0]?.conversationId).toBe(id);
+			expect(posts[0]?.user).toBe(ALICE);
+			expect(posts[0]?.key).toMatch(/^review:/);
 		} finally {
 			await host.close();
 		}
@@ -404,7 +366,7 @@ describe("the loops fire notify on a changed review", () => {
 			};
 
 			// The review COMPLETES with changes after consuming a hint; the
-			// notice write then rejects (the ambient seam hiccuping).
+			// notice post then rejects (the notices seam hiccuping).
 			host.setCuration({
 				takeHints: async () => [noticeHint(1)],
 				forkReview: async () =>
@@ -412,8 +374,8 @@ describe("the loops fire notify on a changed review", () => {
 						{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
 					]),
 			});
-			host.setAmbient = async () => {
-				throw new Error("ambient seam unavailable");
+			host.notices.post = async () => {
+				throw new Error("notices seam unavailable");
 			};
 
 			await loop.onRunSettled(event, API, CONTEXT);
@@ -421,12 +383,12 @@ describe("the loops fire notify on a changed review", () => {
 
 			// (a) No phantom refund: the review completed, so its consumed
 			// hint is gone for good — the pending-hints file was never
-			// written (the buggy path refunds an already-applied review).
+			// written.
 			await expect(pendingHintsRaw(host, ALICE)).rejects.toMatchObject({
 				code: "ENOENT",
 			});
 			// (b) No backoff step: a later settle at the SAME instant runs a
-			// review immediately (a blocked user would skip takeHints).
+			// review immediately.
 			host.setCuration({
 				takeHints: async () => [noticeHint(2)],
 				forkReview: async () => reviewed([]),
@@ -469,8 +431,8 @@ describe("the loops fire notify on a changed review", () => {
 						{ changeId: "chg-1", summary: "noted the acme port quirk", target: "memory:markdown" },
 					]),
 			});
-			host.setAmbient = async () => {
-				throw new Error("ambient seam unavailable");
+			host.notices.post = async () => {
+				throw new Error("notices seam unavailable");
 			};
 
 			const budget: RunBudget = { left: () => 12, spend: async () => true };
@@ -504,12 +466,11 @@ describe("the loops fire notify on a changed review", () => {
 
 			// The step reported success: no phantom "digest ... failed"
 			// error log (the notice failure may log a notice line), and
-			// the completed entry was consumed despite the notice failure —
-			// a notice degrades to a missing notice, never a failed step.
+			// the completed entry was consumed despite the notice failure.
 			expect(
 				logs.some((line) => /digest of conversation .+ failed/.test(line)),
 			).toBe(false);
-			expect(logs.some((line) => line.includes("ambient seam unavailable"))).toBe(
+			expect(logs.some((line) => line.includes("notices seam unavailable"))).toBe(
 				true,
 			);
 			const queueFile = JSON.parse(

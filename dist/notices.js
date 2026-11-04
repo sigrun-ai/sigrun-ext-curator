@@ -1,127 +1,81 @@
 /**
- * The post-review notice (`src/notices.ts`, Task B5): what the user
- * sees when a review changed something — ONE ambient record on the
- * originating conversation (`curator.notice`, place `status`), one
- * line per change (`Learned: <summary>`), with a `navigate` action to
- * the curator view anchored at the review.
+ * The post-review notice (`src/notices.ts`, notices Task 9): what the
+ * user sees when a review changed something — ONE core per-user notice
+ * posted through `host.notices.post`, keyed `review:<reviewId>` (a
+ * re-run of one review replaces its notice), aimed at the review's
+ * owner and carrying the originating conversation id.
  *
- * The ambient seam is the ONLY carrier (the brief): a notice is never
- * a transcript entry (a fork would replay it) and never a notifier or
- * channel delivery (gateway channels get no notice by default, spec
- * P8). Ambient records are display-only — no action route reaches
- * them — so Undo lives on the curator VIEW; the notice's button just
- * navigates there.
+ * The title joins the change lines (`Learned: <summary>` per change);
+ * the body tells the user where the review lives. Two actions ride the
+ * notice: **Undo** — an extension action running the declared
+ * `undoReview` notice-action handler with payload `{reviewId}` (behind
+ * a confirm prompt), and **Review** — a navigate action to the curator
+ * view anchored at the review.
  *
- * The body must pass the server's own ambient validation (a `status`
- * slot allows ONE line-level block, literal content only — ambient
- * bodies carry no data document, so bindings are rejected): a single
- * `callout` whose title joins the change lines and whose actions
- * carry the navigate button. One line-level block per seam rule.
+ * This replaced the pre-core-notices shape (an ambient record on the
+ * conversation, with the undo only reachable through the view): the
+ * ambient seam is display-only, so Undo could never ride it. Core
+ * notices carry extension actions natively. `CURATOR_NOTICE_KIND`
+ * stays exported (and the factory keeps declaring it in
+ * `ambientKinds`) for ONE reason: the one-time migration sweep in the
+ * tick clears the pre-move ambient notices, and the host's write gate
+ * throws on clearing an undeclared key. The per-user notices ledger
+ * file is gone — core's notice store owns durability.
  *
- * DURABILITY: each notice is remembered in `notices.json` under the
- * user's state dir (`readNotices` is the view's lookup) — an Undo
- * after a restart still knows which conversation's ambient record to
- * clear. The file is bounded: recording a notice replaces the entry
- * of the SAME review id (a re-run of one review id is one notice) and
- * the file keeps the newest 50 (matching the feed window the view
- * shows — older notices have nothing left to undo once the feed rolls
- * past them).
+ * A post is best-effort at the seam: the caller (the loops) isolates a
+ * rejection so a notices failure degrades to a missing notice, never
+ * a failed review.
  */
-import { join } from "node:path";
 import { CURATOR_NOTICE_KIND } from "./index.js";
 export { CURATOR_NOTICE_KIND };
-/** The notice ledger's file name under the user's state dir. */
-const NOTICES_FILE = "notices.json";
-/** How many notices the ledger keeps (the view's feed window). */
-const NOTICE_LEDGER_MAX = 50;
-/** The zero-signal context the ambient write runs under (the review
- *  body has no caller signal of its own — the run's deadline bound it). */
-const CONTEXT = { abortSignal: undefined };
+/** The replace key one review's notice carries (`review:<reviewId>`). */
+export function reviewNoticeKey(reviewId) {
+    return `review:${reviewId}`;
+}
 /**
- * Announce one completed review: when the result carries changes, set
- * the `curator.notice` ambient record on the conversation and record
- * the notice durably. No changes → nothing (an unchanged conversation
- * stays untouched). Answers the notice record (undefined when no
- * notice was set).
+ * Announce one completed review: when the result carries changes, post
+ * the keyed core notice for the review's owner. No changes (or no
+ * review id) → nothing. Answers true when a notice was posted.
  */
 export async function notify(host, conversationId, user, result) {
     if (result.status !== "completed")
-        return undefined;
+        return false;
     if (result.changes.length === 0)
-        return undefined;
+        return false;
     const reviewId = result.reviewId;
     if (reviewId === undefined || reviewId === "")
-        return undefined;
-    const at = new Date().toISOString();
-    await host.setAmbient(conversationId, {
-        key: CURATOR_NOTICE_KIND,
-        place: "status",
-        body: noticeBody(result.changes.map((change) => change.summary), reviewId),
-    }, CONTEXT);
-    const record = { reviewId, conversationId, at };
-    await recordNotice(host, user, record);
-    return record;
-}
-/**
- * The notice body: ONE line-level `callout` (the `status` slot's
- * one-line rule) whose title joins the change summaries and whose
- * actions navigate to the curator view anchored at the review.
- */
-function noticeBody(summaries, reviewId) {
-    const lines = summaries.map((summary) => `Learned: ${summary}`);
-    return {
-        v: 1,
-        root: {
-            type: "callout",
-            id: "curator-notice",
-            tone: "neutral",
-            // The one-line rule makes the title the line the channels show;
-            // multiple changes join on the same line (a statusline slot).
-            title: lines.join(" · "),
-            body: "Open the curator view to review or undo.",
-            actions: [
-                {
-                    id: "open",
-                    label: "Curator",
-                    icon: "book",
-                    action: {
-                        type: "navigate",
-                        target: {
-                            view: {
-                                extension: "curator",
-                                id: "curator",
-                                params: { review: reviewId },
-                            },
-                        },
+        return false;
+    const title = result.changes
+        .map((change) => `Learned: ${change.summary}`)
+        .join(" · ");
+    await host.notices.post({
+        user,
+        conversationId,
+        key: reviewNoticeKey(reviewId),
+        title,
+        body: "Open the curator view to review or undo.",
+        actions: [
+            {
+                id: "undo",
+                label: "Undo",
+                kind: "extension",
+                name: "undoReview",
+                payload: { reviewId },
+                confirm: "Undo every change this review made?",
+            },
+            {
+                id: "review",
+                label: "Review",
+                kind: "navigate",
+                target: {
+                    view: {
+                        extension: "curator",
+                        id: "curator",
+                        params: { review: reviewId },
                     },
                 },
-            ],
-        },
-    };
-}
-/** The ledger file path for one user. */
-function noticesFile(host, user) {
-    return join(host.stores.user(user).paths.state, NOTICES_FILE);
-}
-/** Read the user's recorded notices (newest first); absent/malformed → []. */
-export async function readNotices(host, user) {
-    const { readStateJson } = await import("./queue.js");
-    const parsed = await readStateJson(noticesFile(host, user), []);
-    if (!Array.isArray(parsed))
-        return [];
-    return parsed.filter((entry) => typeof entry === "object" &&
-        entry !== null &&
-        typeof entry.reviewId === "string" &&
-        typeof entry.conversationId === "number" &&
-        typeof entry.at === "string");
-}
-/** Record one notice: replace the same review's entry, keep the newest 50. */
-async function recordNotice(host, user, record) {
-    const { writeStateJson } = await import("./queue.js");
-    const current = await readNotices(host, user);
-    const next = [
-        record,
-        ...current.filter((entry) => entry.reviewId !== record.reviewId),
-    ].slice(0, NOTICE_LEDGER_MAX);
-    await writeStateJson(host.stores.user(user).paths.state, NOTICES_FILE, next);
+            },
+        ],
+    });
+    return true;
 }

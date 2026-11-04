@@ -123,11 +123,46 @@ export default function createCurator(host) {
         commands: [createLearnCommand(host, loop1.learnNow)],
         ambientKinds: [CURATOR_NOTICE_KIND],
         interactionKinds: [CURATOR_OVERLAY_QUESTION_KIND],
+        // The notice's Undo action (notices Task 9): undoes the review the
+        // notice announced, gated on the notice's user (the notice pile is
+        // per-user, but the handler re-checks — a notice's payload is
+        // client-visible).
+        noticeActions: { undoReview: undoReviewNoticeAction(host) },
         surfaces: { views: [createCuratorView(host)] },
     };
 }
+/**
+ * The notice's **Undo** action handler (`noticeActions.undoReview`):
+ * the clicker must be the notice's own user (a core notice is already
+ * per-user, but the payload is client-visible — the handler never
+ * trusts it blindly), then the review reverts through
+ * `host.curation.undoReview(user, payload.reviewId)`. An ok result
+ * clears the notice (core's clear-on-ok rule); the message names the
+ * reverted count.
+ */
+function undoReviewNoticeAction(host) {
+    return async (ctx, payload) => {
+        if (ctx.principal.user === undefined || ctx.principal.user !== ctx.notice.user) {
+            return { ok: false, error: { message: "this notice is not yours" } };
+        }
+        const reviewId = payload.reviewId;
+        if (typeof reviewId !== "string" || reviewId === "") {
+            return { ok: false, error: { message: "undoReview expects payload {reviewId}" } };
+        }
+        try {
+            const reverted = await host.curation.undoReview(ctx.notice.user, reviewId);
+            return { ok: true, message: `Undid ${reverted} change(s)` };
+        }
+        catch (cause) {
+            return {
+                ok: false,
+                error: { message: cause instanceof Error ? cause.message : String(cause) },
+            };
+        }
+    };
+}
 export { parseCuratorSettings, readSettings, DEFAULT_CURATOR_SETTINGS, } from "./settings.js";
-export { notify, readNotices } from "./notices.js";
+export { notify, reviewNoticeKey } from "./notices.js";
 export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
 export { enqueueLearn, learnReviewId } from "./learn.js";
 export { createLoop2, eligibleUsers, tick, IDLE_THRESHOLD_MS, LOOP2_TICK_DEADLINE_MS, FIRST_RUN_GRACE_MS, FULL_PASS_INTERVAL_MS, PASS_FILE, PASS_STEPS, FIRST_TICK_FILE, } from "./loop2.js";

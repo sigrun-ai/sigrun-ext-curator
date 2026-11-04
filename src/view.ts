@@ -37,10 +37,11 @@
  *   (`{itemId: groupId}` where the group id is `review-<newest sha>`):
  *   resolves the sha back to the entry's review id through the feed
  *   (core's `undoReview` matches `entry.reviewId`, never the group
- *   key), then `host.curation.undoReview`, then `host.clearAmbient` on
- *   the notice conversation's `curator.notice` slot (the notice ledger
- *   in `src/notices.ts` remembers it); a commit with no review id
- *   answers "Nothing to undo" without calling the host;
+ *   key), then `host.curation.undoReview`, then clears the notice by
+ *   key (`host.notices.clear({user, key: "review:<reviewId>"})` — the
+ *   core notice pile replaced the ambient record + ledger, notices
+ *   Task 9); a commit with no review id answers "Nothing to undo"
+ *   without calling the host;
  * - `setPaused` — the page header's pause button (a submit dispatching
  *   `{}`): toggles the user's `paused` setting, read live by both
  *   loops — pausing takes effect on the next event, restart-free.
@@ -62,8 +63,7 @@ import type {
 } from "@sigrun/sigrun/extension";
 import { accessOf } from "@sigrun/shared/access";
 import type { Access } from "@sigrun/shared/access";
-import { readNotices } from "./notices.js";
-import { CURATOR_NOTICE_KIND } from "./notices.js";
+import { reviewNoticeKey } from "./notices.js";
 import { parseCuratorSettings } from "./settings.js";
 
 /** How many feed entries the view lists (the brief: newest 50). */
@@ -74,9 +74,6 @@ export const VIEW_FEED_LIMIT = 50;
  *  own `feedOf` walks until the entries run out — this view bounds
  *  the walk and says so when the bound elapses). */
 export const VIEW_FEED_MAX_PAGES = 3;
-
-/** The zero-signal context the ambient clear runs under. */
-const CONTEXT = { abortSignal: undefined };
 
 /** One grouped review block in the feed (newest first). */
 export interface ReviewGroup {
@@ -320,16 +317,12 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 					} catch (cause) {
 						return fail(cause);
 					}
-					const anchoredNotice = (await readNotices(host, who.user)).find(
-						(entry) => entry.reviewId === anchored,
-					);
-					if (anchoredNotice !== undefined) {
-						await host.clearAmbient(
-							anchoredNotice.conversationId,
-							CURATOR_NOTICE_KIND,
-							CONTEXT,
-						).catch(() => undefined);
-					}
+					// The revert already succeeded — a failing notice clear only
+					// leaves a stale notice, so it never turns the undo into a
+					// failed action with no toast.
+					await host.notices
+						.clear({ user: who.user, key: reviewNoticeKey(anchored) })
+						.catch(() => undefined);
 					return {
 						ok: true,
 						toast: reverted > 0 ? `Undid ${reverted} change(s)` : "Nothing to undo",
@@ -360,21 +353,14 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 				} catch (cause) {
 					return fail(cause);
 				}
-				// Clear the notice this review set, when the ledger remembers
-				// one (a digest review with no notice clears nothing).
-				const notice = (await readNotices(host, who.user)).find(
-					(entry) => entry.reviewId === reviewId,
-				);
-				if (notice !== undefined) {
-					// The revert already succeeded — a failing clear only leaves a
-					// stale notice (replaced by the next review's), so it must
-					// never turn the undo into a failed action with no toast.
-					await host.clearAmbient(
-						notice.conversationId,
-						CURATOR_NOTICE_KIND,
-						CONTEXT,
-					).catch(() => undefined);
-				}
+				// Clear the notice this review posted, by key (a notice-less
+				// clear is a no-op). The revert already succeeded — a failing
+				// clear only leaves a stale notice (replaced by the next
+				// review's), so it must never turn the undo into a failed
+				// action with no toast.
+				await host.notices
+					.clear({ user: who.user, key: reviewNoticeKey(reviewId) })
+					.catch(() => undefined);
 				return {
 					ok: true,
 					toast: reverted > 0 ? `Undid ${reverted} change(s)` : "Nothing to undo",

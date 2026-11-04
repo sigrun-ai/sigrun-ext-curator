@@ -56,10 +56,15 @@ import type {
 	SigrunCurationHost,
 	SigrunHost,
 	SubmissionInputPart,
+	UserNotice,
+	UserNoticeActionHandler,
+	UserNoticeActionResult,
+	UserNoticeInput,
 	WhenBusyMode,
 } from "@sigrun/sigrun/extension";
 import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import type { SubmissionId } from "@earendil-works/pi-durable";
+import type { JsonObject } from "@sigrun/shared/blocks";
 
 /** One recorded host call (the ordered log `fake.calls` carries). */
 export interface FakeCall {
@@ -114,6 +119,24 @@ export interface FakeHost extends SigrunHost {
 	readonly interactions: ReadonlyMap<string, InteractionRecord>;
 	/** The stored conversation metas, keyed id. */
 	readonly metas: ReadonlyMap<ConversationId, SessionMeta>;
+	/** The stored notices, keyed user (what `notices.list` serves). */
+	readonly storedNotices: ReadonlyMap<string, readonly UserNotice[]>;
+	/** Register this extension's declared notice action handlers (the
+	 *  loader's `noticeActions` plumbing: dispatch looks a handler up by
+	 *  name and runs it). */
+	registerNoticeActions(
+		handlers: Readonly<Record<string, UserNoticeActionHandler>>,
+	): void;
+	/** Dispatch one notice action through the registered handlers. */
+	invokeNoticeAction(
+		name: string,
+		ctx: {
+			readonly principal: Principal;
+			readonly notice: UserNotice;
+			readonly signal: AbortSignal;
+		},
+		payload: JsonObject,
+	): Promise<UserNoticeActionResult>;
 	/** Seed an interaction record directly (no status transitions). */
 	seed(conversationId: ConversationId, record: InteractionRecord): void;
 	/** Tear down the stores dir (call from an afterAll). */
@@ -261,6 +284,13 @@ export async function createFakeHost(
 	let settleBehavior: "transition" | "true" | "false" | { readonly reject: unknown } =
 		"transition";
 	let notifyBehavior: "ok" | { readonly reject: unknown } = "ok";
+
+	// The per-user notices pile (owner-scoped like the real service:
+	// this fake hosts one extension — "curator") and the declared
+	// notice action handlers (the loader's noticeActions plumbing).
+	const noticesByUser = new Map<string, UserNotice[]>();
+	const noticeActionHandlers = new Map<string, UserNoticeActionHandler>();
+	let noticeSeq = 0;
 
 	const models: ModelEntry[] = [
 		{
@@ -634,6 +664,44 @@ export async function createFakeHost(
 			if (typeof notifyBehavior === "object") throw notifyBehavior.reject;
 		},
 
+		notices: {
+			post: async (input) => {
+				record("notices.post", input);
+				noticeSeq += 1;
+				const notice: UserNotice = {
+					...input,
+					id: `notice-${noticeSeq}`,
+					owner: "curator",
+					at: new Date(0).toISOString(),
+				};
+				const pile = noticesByUser.get(input.user) ?? [];
+				// A keyed post REPLACES the same extension's same-key notice.
+				noticesByUser.set(input.user, [
+					notice,
+					...pile.filter(
+						(entry) => input.key === undefined || entry.key !== input.key,
+					),
+				]);
+				return { id: notice.id };
+			},
+			clear: async (selector) => {
+				record("notices.clear", selector);
+				const pile = noticesByUser.get(selector.user) ?? [];
+				noticesByUser.set(
+					selector.user,
+					pile.filter((entry) =>
+						"key" in selector
+							? entry.key !== selector.key
+							: entry.id !== selector.id,
+					),
+				);
+			},
+			list: async (user) => {
+				record("notices.list", user);
+				return noticesByUser.get(user) ?? [];
+			},
+		},
+
 		users: {
 			list: async () => {
 				record("users.list");
@@ -759,6 +827,21 @@ export async function createFakeHost(
 		},
 		interactions,
 		metas,
+		storedNotices: noticesByUser,
+		registerNoticeActions: (handlers) => {
+			noticeActionHandlers.clear();
+			for (const [name, handler] of Object.entries(handlers)) {
+				noticeActionHandlers.set(name, handler);
+			}
+		},
+		invokeNoticeAction: async (name, ctx, payload) => {
+			record("noticeActions.invoke", name, ctx.notice.id, payload);
+			const handler = noticeActionHandlers.get(name);
+			if (handler === undefined) {
+				throw new Error(`fake host: no notice action "${name}" registered`);
+			}
+			return handler(ctx, payload);
+		},
 		seed: (conversationId, rec) => {
 			const key = `${conversationId}:${rec.callId}`;
 			const existing = interactions.get(key);

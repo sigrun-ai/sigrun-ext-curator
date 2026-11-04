@@ -22,11 +22,13 @@ the change feed with per-review undo.
 
 ## What you see
 
-Mostly nothing. When a review CHANGES something, the originating
-conversation's status line carries one quiet notice — a
-`Learned: …` line per change with a button to the **Curator** view
-(the notice never lands in the transcript, so forks never replay it,
-and it is never pushed to a notifier or chat channel).
+Mostly nothing. When a review CHANGES something, a **notice** appears
+in your notices (a `Learned: …` title naming the change, tied to the
+originating conversation) with two buttons: **Review** opens the
+**Curator** view anchored at the review, and **Undo** — after a
+confirm — reverts every change that review made (the notice never
+lands in the transcript, so forks never replay it, and it is never
+pushed to a notifier or chat channel).
 
 The **Curator** view (per user; only your own data ever renders) lists
 
@@ -41,9 +43,9 @@ The **Curator** view (per user; only your own data ever renders) lists
   without disabling anything else; the view and `/learn` keep working
   while paused.
 
-Undo is two clicks (notice → view → Undo), not one: the notice lives
-on the display-only ambient seam, so the undo action lives on the
-view.
+Undo is one click from the notice itself (the notice's **Undo** action
+runs the extension's declared notice-action handler); the view's
+per-review **Undo review** does the same from the feed.
 
 ## `/learn [focus]`
 

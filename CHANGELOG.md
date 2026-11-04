@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Changed
+- The post-review "Learned: …" notice moved from the conversation's
+  ambient record to sigrun's core per-user notices: `notify` posts one
+  keyed notice (`review:<reviewId>`) through `host.notices.post` with
+  an **Undo** extension action (the new `noticeActions.undoReview`
+  factory handler, behind a confirm prompt) and a **Review** navigate
+  action to the curator view. The view's undo now clears the notice by
+  key; the per-user notices ledger file is gone (core's notice store
+  owns durability). The `curator.notice` ambient kind stays declared
+  while the tick's one-time sweep clears pre-move ambient notices
+  (marker `notices-migrated.json` per user).
+
 ## [0.2.0] - 2026-11-03
 ### Changed
 - The curator view follows core Skills: the learned-skills and overlays

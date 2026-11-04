@@ -11,9 +11,14 @@
  */
 
 import { describe, expect, test } from "vitest";
-import type { ExtensionCommandContribution } from "@sigrun/sigrun/extension";
+import type {
+	ExtensionCommandContribution,
+	UserNotice,
+} from "@sigrun/sigrun/extension";
 import { createFakeHost } from "./fake-host.js";
+import type { FakeHost } from "./fake-host.js";
 import createCurator, { CURATOR_TICK_TASK, readSettings } from "../src/index.js";
+import { notify } from "../src/notices.js";
 
 /** The acting user these fixtures run as (tests own their literals). */
 const ALICE = "alice";
@@ -50,6 +55,10 @@ describe("createCurator (the loader contract)", () => {
 		// The declared kinds.
 		expect(result.ambientKinds).toEqual(["curator.notice"]);
 		expect(result.interactionKinds).toEqual(["curator.overlay-question"]);
+
+		// The declared notice actions (notices Task 9): the Undo on the
+		// posted notice runs the extension's undoReview handler.
+		expect(Object.keys(result.noticeActions ?? {})).toEqual(["undoReview"]);
 
 		// The view: one view surface, placement `view`.
 		expect(result.surfaces?.views?.map((view) => view.id)).toEqual(["curator"]);
@@ -120,6 +129,84 @@ describe("readSettings (per user, with defaults)", () => {
 				threshold: 10,
 				dailyRuns: 12,
 			});
+		} finally {
+			await host.close();
+		}
+	});
+});
+
+describe("the noticeActions.undoReview handler (the notice's Undo)", () => {
+	const BOB = "bob";
+
+	/** Post one review notice and answer the stored record it became. */
+	async function postedNotice(host: FakeHost, user: string): Promise<UserNotice> {
+		const id = await host.conversations.create({ owner: user });
+		await notify(host, id, user, {
+			status: "completed",
+			text: "saved",
+			changes: [
+				{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
+			],
+			reviewId: "review-acme",
+		});
+		const [notice] = await host.notices.list(user);
+		expect(notice).toBeDefined();
+		return notice;
+	}
+
+	test("undoReview handler undoes and returns the count", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const result = createCurator(host);
+			host.registerNoticeActions(result.noticeActions ?? {});
+			host.setCuration({ undoReview: async () => 2 });
+			const notice = await postedNotice(host, ALICE);
+
+			const outcome = await host.invokeNoticeAction(
+				"undoReview",
+				{
+					principal: { user: ALICE, admin: false, service: false, method: "token" },
+					notice,
+					signal: new AbortController().signal,
+				},
+				{ reviewId: "review-acme" },
+			);
+			expect(outcome).toEqual({ ok: true, message: "Undid 2 change(s)" });
+			const undos = host.calls.filter(
+				(call) => call.method === "curation.undoReview",
+			);
+			expect(undos).toHaveLength(1);
+			expect(undos[0]?.args).toEqual([ALICE, "review-acme"]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("undoReview refuses a principal other than the notice's user", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
+		try {
+			const result = createCurator(host);
+			host.registerNoticeActions(result.noticeActions ?? {});
+			host.setCuration({ undoReview: async () => 1 });
+			const notice = await postedNotice(host, ALICE);
+
+			const outcome = await host.invokeNoticeAction(
+				"undoReview",
+				{
+					principal: { user: BOB, admin: false, service: false, method: "token" },
+					notice,
+					signal: new AbortController().signal,
+				},
+				{ reviewId: "review-acme" },
+			);
+			expect(outcome).toEqual({
+				ok: false,
+				error: { message: "this notice is not yours" },
+			});
+			// The curation host was never touched for the wrong user.
+			expect(
+				host.calls.filter((call) => call.method === "curation.undoReview"),
+			).toHaveLength(0);
 		} finally {
 			await host.close();
 		}

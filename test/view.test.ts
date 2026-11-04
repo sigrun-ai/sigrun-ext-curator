@@ -22,8 +22,9 @@
  * - An outside-actor entry renders as "outside sigrun" (catch-up
  *   commits the store did not author, Task 9's actor widening).
  * - The surface's `actions` reach the extension: `undoReview` reverts
- *   through `host.curation.undoReview` and then clears the notice
- *   conversation's ambient record; `setPaused` writes the settings.
+ *   through `host.curation.undoReview` and then clears the notice by
+ *   key (`host.notices.clear({user, key: "review:<reviewId>"})`);
+ *   `setPaused` writes the settings.
  * - The tree validates against the server's own `validateTree`
  *   (placement `view`, handlers = the declared action keys) — the
  *   same check `SurfaceService.render` runs before serving.
@@ -40,8 +41,6 @@ import { createFakeHost } from "./fake-host.js";
 import type { FakeHost } from "./fake-host.js";
 import { createCuratorView } from "../src/view.js";
 import { notify } from "../src/notices.js";
-import type { NoticeRecord } from "../src/notices.js";
-import { CURATOR_NOTICE_KIND } from "../src/index.js";
 import type { ConversationId } from "@earendil-works/pi-durable";
 
 /** The users these fixtures walk (tests own their literals). */
@@ -456,8 +455,8 @@ describe("the curator view", () => {
 			scriptFeed(host, [
 				feedEntry("aa0001", { reviewId: "review-3", skill: "deploy-staging" }),
 			]);
-			// A completed review set its notice (the ledger keys on the
-			// review id too).
+			// A completed review posted its notice (the core notice keys on
+			// the review id too).
 			await notify(host, conversation, ALICE, {
 				status: "completed",
 				text: "saved",
@@ -481,12 +480,11 @@ describe("the curator view", () => {
 			);
 			expect(undos).toHaveLength(1);
 			expect(undos[0]?.args).toEqual([ALICE, "review-3"]);
-			// And the notice lookup used the same resolved id: the
-			// ambient record on the notice conversation cleared.
-			const cleared = host.calls.filter((call) => call.method === "clearAmbient");
+			// And the notice cleared by its key (the core store owns the
+			// pile now — the clear names the user and the review key).
+			const cleared = host.calls.filter((call) => call.method === "notices.clear");
 			expect(cleared).toHaveLength(1);
-			expect(cleared[0]?.args[0]).toBe(conversation);
-			expect(cleared[0]?.args[1]).toBe(CURATOR_NOTICE_KIND);
+			expect(cleared[0]?.args[0]).toEqual({ user: ALICE, key: "review:review-3" });
 		} finally {
 			await host.close();
 		}
@@ -600,8 +598,9 @@ describe("the curator view", () => {
 				},
 			});
 
-			// A completed review set the notice on the conversation.
-			const notice: NoticeRecord | undefined = await notify(host, conversation, ALICE, {
+			// A completed review posted its notice (the core notice keys
+			// on the review id).
+			await notify(host, conversation, ALICE, {
 				status: "completed",
 				text: "saved",
 				changes: [
@@ -609,7 +608,6 @@ describe("the curator view", () => {
 				],
 				reviewId: "review-acme",
 			});
-			expect(notice).toBeDefined();
 
 			const view = createCuratorView(host);
 			const action = view.actions?.["undoReview"];
@@ -625,17 +623,16 @@ describe("the curator view", () => {
 
 			// The review reverted through the curation host, for the caller.
 			expect(undone).toEqual([`${ALICE}:review-acme`]);
-			// And the notice conversation's ambient record was cleared.
-			const cleared = host.calls.filter((call) => call.method === "clearAmbient");
+			// And the notice cleared by its key.
+			const cleared = host.calls.filter((call) => call.method === "notices.clear");
 			expect(cleared).toHaveLength(1);
-			expect(cleared[0]?.args[0]).toBe(conversation);
-			expect(cleared[0]?.args[1]).toBe(CURATOR_NOTICE_KIND);
+			expect(cleared[0]?.args[0]).toEqual({ user: ALICE, key: "review:review-acme" });
 		} finally {
 			await host.close();
 		}
 	});
 
-	test("undo for a review without a recorded notice still reverts (nothing to clear)", async () => {
+	test("undo for a review without a posted notice still reverts (nothing to clear)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("dd0001", { reviewId: "digest-old" })]);
@@ -651,9 +648,15 @@ describe("the curator view", () => {
 				itemId: "review-dd0001",
 			});
 			expect(undone).toEqual([`${ALICE}:digest-old`]);
+			// The clear-by-key runs unconditionally (a notice-less clear
+			// is a no-op in the core store), but no ambient write ever
+			// happened.
 			expect(
 				host.calls.filter((call) => call.method === "clearAmbient"),
 			).toHaveLength(0);
+			expect(
+				host.calls.filter((call) => call.method === "notices.clear"),
+			).toHaveLength(1);
 		} finally {
 			await host.close();
 		}
@@ -700,7 +703,7 @@ describe("the curator view", () => {
 		}
 	});
 
-	test("a clearAmbient rejection after a successful undo still lands the undo toast", async () => {
+	test("a notices.clear rejection after a successful undo still lands the undo toast", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			const conversation = (await host.conversations.create({
@@ -712,8 +715,7 @@ describe("the curator view", () => {
 			scriptFeed(host, [
 				feedEntry("aa0001", { reviewId: "review-acme", skill: "deploy-staging" }),
 			]);
-			// The review set its notice (the ledger remembers the
-			// conversation); the ambient CLEAR then hiccups.
+			// The review posted its notice; the notice CLEAR then hiccups.
 			await notify(host, conversation, ALICE, {
 				status: "completed",
 				text: "saved",
@@ -722,8 +724,8 @@ describe("the curator view", () => {
 				],
 				reviewId: "review-acme",
 			});
-			host.clearAmbient = async () => {
-				throw new Error("ambient seam unavailable");
+			host.notices.clear = async () => {
+				throw new Error("notices seam unavailable");
 			};
 
 			const view = createCuratorView(host);

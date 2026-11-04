@@ -44,6 +44,9 @@ export declare const IDLE_THRESHOLD_MS = 600000;
  * job deadline, so a pass fragment always outlives its own tick.
  */
 export declare const LOOP2_TICK_DEADLINE_MS = 300000;
+/** The per-user sweep marker (notices Task 9): present → the one-time
+ *  ambient-notice migration already ran for this user. */
+export declare const NOTICES_MIGRATED_FILE = "notices-migrated.json";
 /** The first-run grace: no pass until 24h after the first tick ever. */
 export declare const FIRST_RUN_GRACE_MS: number;
 /** How long a completed pass keeps its user ineligible. */

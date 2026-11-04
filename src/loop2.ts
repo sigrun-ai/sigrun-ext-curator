@@ -34,6 +34,7 @@
  */
 
 import { join } from "node:path";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type { SigrunHost } from "@sigrun/sigrun/extension";
 import { readStateJson, writeStateJson } from "./queue.js";
 import { readSettings } from "./settings.js";
@@ -57,6 +58,10 @@ export const IDLE_THRESHOLD_MS = 600_000;
  * job deadline, so a pass fragment always outlives its own tick.
  */
 export const LOOP2_TICK_DEADLINE_MS = 300_000;
+
+/** The per-user sweep marker (notices Task 9): present → the one-time
+ *  ambient-notice migration already ran for this user. */
+export const NOTICES_MIGRATED_FILE = "notices-migrated.json";
 
 /** The first-run grace: no pass until 24h after the first tick ever. */
 export const FIRST_RUN_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -293,6 +298,10 @@ export async function tick(
 	}
 	if (startedAt.getTime() - firstTick.getTime() < FIRST_RUN_GRACE_MS) return;
 
+	// The one-time migration sweep runs before any pass logic so even an
+	// ineligible user's pre-core-notices ambient notices get cleared.
+	await sweepAmbientNotices(host, log);
+
 	const deadlineAt = startedAt.getTime() + LOOP2_TICK_DEADLINE_MS;
 	for (const user of await eligibleUsers(host, now)) {
 		if (now().getTime() >= deadlineAt) break;
@@ -302,6 +311,59 @@ export async function tick(
 					error instanceof Error ? error.message : String(error)
 				}`,
 			);
+		});
+	}
+}
+
+/**
+ * The one-time ambient-notice migration sweep (notices Task 9):
+ * pre-core-notices versions announced a review on the originating
+ * conversation's `curator.notice` AMBIENT record; the notice is a core
+ * per-user notice now, so one tick clears each user's conversations'
+ * ambient slots, then writes the `notices-migrated` marker so the
+ * sweep never runs twice for one user. Each `clearAmbient` commits one
+ * empty-body write and emits one `ambient.changed` — accepted for a
+ * one-time pass (never batched). The sweep runs BEFORE the eligibility
+ * gate so an ineligible user's stale notices still go; a clearAmbient
+ * failure is logged and the marker is NOT written (the next tick
+ * retries). The sweep is why the factory still declares
+ * `ambientKinds: ["curator.notice"]`: the host's write gate throws on
+ * clearing an undeclared key.
+ */
+async function sweepAmbientNotices(
+	host: SigrunHost,
+	log: (message: string) => void,
+): Promise<void> {
+	for (const row of await host.users.list()) {
+		const user = row.user;
+		const stateDir = host.stores.user(user).paths.state;
+		const marker = await readStateJson<{ migratedAt?: string }>(
+			join(stateDir, NOTICES_MIGRATED_FILE),
+			{},
+		);
+		if (typeof marker.migratedAt === "string") continue;
+		let failed = false;
+		for (const conversation of await host.conversations.list({ owner: user })) {
+			try {
+				await host.clearAmbient(
+					conversation.id as ConversationId,
+					"curator.notice",
+					{
+						abortSignal: undefined,
+					},
+				);
+			} catch (error) {
+				failed = true;
+				log(
+					`loop 2: ${user} notices sweep: clearAmbient for conversation ${String(conversation.id)} failed: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+		}
+		if (failed) continue; // the next tick retries this user
+		await writeStateJson(stateDir, NOTICES_MIGRATED_FILE, {
+			migratedAt: new Date().toISOString(),
 		});
 	}
 }

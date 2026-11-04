@@ -66,8 +66,7 @@ export type { CuratorViewData } from "./view.js";
  */
 export default function createCurator(host: SigrunHost): SigrunExtensionResult;
 export { parseCuratorSettings, readSettings, DEFAULT_CURATOR_SETTINGS, } from "./settings.js";
-export { notify, readNotices } from "./notices.js";
-export type { NoticeRecord } from "./notices.js";
+export { notify, reviewNoticeKey } from "./notices.js";
 export type { CuratorSettings } from "./settings.js";
 export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
 export type { Loop1Deps } from "./loop1.js";
