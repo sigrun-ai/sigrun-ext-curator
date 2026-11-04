@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/ext-curator",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Curator extension for sigrun (pi-durable): the per-user fork review and idle maintenance pass over learned skills and curation targets",
 	"type": "module",
 	"engines": {
