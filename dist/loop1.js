@@ -208,8 +208,8 @@ export function createLoop1(deps) {
             // The review consumed these hints for good — clear their
             // refunded ids so a later settle cannot re-fire on them.
             await clearPendingHints(deps.host, owner, id, hints);
-            // Task B5: announce the changes (no changes → no notice). The
-            // notice is isolated: a failing setAmbient or ledger write
+            // Announce the changes (no changes → no notice). The
+            // notice is isolated: a failing notices post
             // degrades to a missing notice — never a thrown body, which the
             // refund guard would answer with a phantom refund of an
             // already-applied review (re-reviewing learned material).

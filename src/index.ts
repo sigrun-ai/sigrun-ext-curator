@@ -211,6 +211,7 @@ export {
 	PASS_FILE,
 	PASS_STEPS,
 	FIRST_TICK_FILE,
+	NOTICES_MIGRATED_FILE,
 } from "./loop2.js";
 export type { StepId, PassCursor, TickOptions, Loop2Deps } from "./loop2.js";
 export {

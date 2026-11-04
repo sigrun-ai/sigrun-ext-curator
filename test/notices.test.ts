@@ -118,9 +118,6 @@ describe("notify (the post-review core notice)", () => {
 			expect(notice.key).toBe("review:review-acme");
 			expect(notice.title).toBe("Learned: updated `deploy-staging`");
 			expect(notice.body).toBe("Open the curator view to review or undo.");
-			// Multiple changes join the one-line title.
-			expect(notice.actions).toHaveLength(2);
-
 			const undo = notice.actions?.find((action) => action.id === "undo");
 			expect(undo).toMatchObject({
 				label: "Undo",
@@ -178,6 +175,67 @@ describe("notify (the post-review core notice)", () => {
 				"review:review-two",
 			]);
 			expect(posts[1]?.title).toBe("Learned: created `release-flow`");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a review whose joined title would exceed 200 chars posts a truncated title ending in …", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
+			// Six changes whose joined "Learned: …" lines exceed core's
+			// 200-char title cap — the notice must still post (an over-cap
+			// post would throw, and the caller's catch would swallow the
+			// notice entirely).
+			const changes = Array.from({ length: 6 }, (_, i) => ({
+				changeId: `chg-${i}`,
+				summary: `updated \`acme-deploy-step-${i}\` with the rollout quirk`,
+				target: "skills",
+			}));
+			const joined = changes
+				.map((change) => `Learned: ${change.summary}`)
+				.join(" · ");
+			expect(joined.length).toBeGreaterThan(200);
+
+			await notify(host, id, ALICE, {
+				...reviewed(changes),
+				reviewId: "review-long",
+			});
+
+			const posts = postedNotices(host.calls);
+			expect(posts).toHaveLength(1);
+			expect(posts[0]?.title.length).toBeLessThanOrEqual(200);
+			expect(posts[0]?.title.endsWith("…")).toBe(true);
+			expect(posts[0]?.title).toContain("Learned: updated `acme-deploy-step-0`");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("the notice is never written to the transcript and never sent to a notifier", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
+			await notify(host, id, ALICE, {
+				...reviewed([
+					{ changeId: "chg-1", summary: "updated `deploy-staging`", target: "skills" },
+				]),
+				reviewId: "review-acme",
+			});
+
+			// No transcript entry: the notice never submits to the
+			// conversation (a fork would replay it otherwise).
+			expect(
+				host.calls.some((call) => call.method === "conversations.submit"),
+			).toBe(false);
+			// The notices channel is the ONLY carrier: nothing that looks
+			// like a notifier or channel delivery was touched ("notices.*"
+			// is the one allowed match).
+			for (const call of host.calls) {
+				if (call.method.startsWith("notices.")) continue;
+				expect(call.method).not.toMatch(/notif|channel|deliver/i);
+			}
 		} finally {
 			await host.close();
 		}

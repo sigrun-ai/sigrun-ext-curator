@@ -71,7 +71,7 @@ export type { CuratorSettings } from "./settings.js";
 export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
 export type { Loop1Deps } from "./loop1.js";
 export { enqueueLearn, learnReviewId } from "./learn.js";
-export { createLoop2, eligibleUsers, tick, IDLE_THRESHOLD_MS, LOOP2_TICK_DEADLINE_MS, FIRST_RUN_GRACE_MS, FULL_PASS_INTERVAL_MS, PASS_FILE, PASS_STEPS, FIRST_TICK_FILE, } from "./loop2.js";
+export { createLoop2, eligibleUsers, tick, IDLE_THRESHOLD_MS, LOOP2_TICK_DEADLINE_MS, FIRST_RUN_GRACE_MS, FULL_PASS_INTERVAL_MS, PASS_FILE, PASS_STEPS, FIRST_TICK_FILE, NOTICES_MIGRATED_FILE, } from "./loop2.js";
 export type { StepId, PassCursor, TickOptions, Loop2Deps } from "./loop2.js";
 export { archiveUnused, ARCHIVE_UNUSED_DAYS, ARCHIVE_UNUSED_MS, } from "./steps/archive.js";
 export { detectOverlayDrift, OverlayRecheckQueue, RECHECK_QUEUE_FILE, recheckOverlays, overlayQuestionHandler, } from "./steps/overlays.js";

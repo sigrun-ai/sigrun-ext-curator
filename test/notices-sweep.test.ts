@@ -131,8 +131,6 @@ describe("the one-time ambient-notice migration sweep", () => {
 			);
 
 			// The next tick retries the sweep (and now it lands).
-			const host2 = host;
-			void host2;
 			const clears: unknown[] = [];
 			host.clearAmbient = async (id, key) => {
 				clears.push([id, key]);

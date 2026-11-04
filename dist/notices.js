@@ -26,8 +26,24 @@
  * rejection so a notices failure degrades to a missing notice, never
  * a failed review.
  */
+import { NOTICE_LIMITS } from "@sigrun/shared/notices";
 import { CURATOR_NOTICE_KIND } from "./index.js";
 export { CURATOR_NOTICE_KIND };
+/**
+ * Join the change lines into the one-line notice title, bounded by the
+ * core title cap (`NOTICE_LIMITS.title` = 200): a review with many
+ * changes would otherwise throw on post (the caller's catch would then
+ * swallow the notice ENTIRELY — a changed review announcing nothing).
+ * The joined lines fit → verbatim; otherwise the title is cut at the
+ * cap minus one and ends with "…" (the body still names the view,
+ * where every change lists in full).
+ */
+function fitTitle(lines) {
+    const joined = lines.join(" · ");
+    if (joined.length <= NOTICE_LIMITS.title)
+        return joined;
+    return `${joined.slice(0, NOTICE_LIMITS.title - 1)}…`;
+}
 /** The replace key one review's notice carries (`review:<reviewId>`). */
 export function reviewNoticeKey(reviewId) {
     return `review:${reviewId}`;
@@ -45,9 +61,7 @@ export async function notify(host, conversationId, user, result) {
     const reviewId = result.reviewId;
     if (reviewId === undefined || reviewId === "")
         return false;
-    const title = result.changes
-        .map((change) => `Learned: ${change.summary}`)
-        .join(" · ");
+    const title = fitTitle(result.changes.map((change) => `Learned: ${change.summary}`));
     await host.notices.post({
         user,
         conversationId,
