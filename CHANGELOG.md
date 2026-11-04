@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-03
+### Changed
+- The curator view follows core Skills: the learned-skills and overlays
+  sections are gone (the core `core/skills` view owns them), replaced by
+  a "Skills" page action that navigates to the Skills tab. The view keeps
+  the review feed, the pause switch, and the memory targets.
+- The feed is git-backed: entry ids are commit SHAs, `actor` includes
+  `outside` (rendered "outside sigrun"), undo groups key on the newest
+  commit of a review, and a deep-linked `review` param filters the feed
+  (paging up to three feed pages to find older reviews). Undo resolves
+  the group sha back to the review id before dispatching; a failing undo
+  is a named action error, never a thrown action.
+
 ## [0.1.1] - 2026-11-03
 ### Fixed
 - Curator questions about your skill notes now open their own conversation
