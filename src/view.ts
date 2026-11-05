@@ -256,7 +256,7 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 	return {
 		id: "curator",
 		title: "Curator",
-		icon: "book",
+		icon: "edit",
 		placement: "view",
 		// A principal-owned surface (§7.3): the principal folds into the
 		// instance identity so two users' views are two instances.

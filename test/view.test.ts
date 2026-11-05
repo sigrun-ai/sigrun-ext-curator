@@ -126,6 +126,18 @@ function reviewIds(tree: unknown): string[] {
 }
 
 describe("the curator view", () => {
+	test("the rail icon is the pencil, distinct from core Skills' book", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const view = createCuratorView(host);
+			// Core's Skills view owns "book"; two rail entries with one glyph
+			// read as the same destination.
+			expect(view.icon).toBe("edit");
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("the view links to core skills and lists no learned skills", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
