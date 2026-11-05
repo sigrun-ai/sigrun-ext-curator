@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Loop-2 digest reviews: served targets' read tools join the digest
+  allow list (the same merge loop 1's fork reviews made), so a digest
+  review of the knowledge target can call `knowledge_find` and the
+  find-before-creating de-dup guidance is achievable on that path.
+
 ## [0.3.0] - 2026-11-04
 ### Changed
 - The post-review "Learned: …" notice moved from the conversation's

@@ -1506,3 +1506,66 @@ describe("an unparseable verdict", () => {
 		}
 	});
 });
+
+// ─── Digest allow-list gains served targets' read tools ────────────────────
+
+describe("reviewDigest read tools (knowledge follow-up)", () => {
+	test("the digest allow list carries served targets' readTools", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const id = await host.conversations.create({ owner: ALICE });
+			const allows: (readonly string[])[] = [];
+			host.setCuration({
+				targets: async () => [
+					{
+						id: "knowledge",
+						tools: ["knowledge_record"],
+						readTools: ["knowledge_find"],
+						guidance: ["find before creating"],
+						maintain: false,
+					},
+				],
+				eligibility: async () => ({
+					owner: ALICE,
+					internal: false,
+					ownerOnly: false,
+					unattributed: 0,
+				}),
+				digestRun: async (_user, opts) => {
+					allows.push([...opts.allow]);
+					return completed("Nothing to save");
+				},
+			});
+			host.setCuration({
+				authors: async () => new Map([[10 as EntryId, ALICE]]),
+			});
+			const view: ConversationViewWire = {
+				conversation: { id },
+				entries: [
+					entry(10, "pi.user", "user", "research acme clinics"),
+					entry(11, "pi.assistant", "assistant", "found three"),
+				],
+				docs: {},
+				steer: { busy: false, queued: 0 },
+			};
+			await queueDigest(host, ALICE, id as ConversationId);
+
+			const work = digestsStep(stepDeps(host, 12));
+			await vi.waitFor(() => {
+				expect(
+					host.calls.some((call) => call.method === "conversations.watch"),
+				).toBe(true);
+			});
+			host.pushView(id as ConversationId, view as never);
+			await work;
+
+			expect(allows).toHaveLength(1);
+			expect(allows[0]).toContain("knowledge_record");
+			// Read tools join the allow list so a digest review can call
+			// knowledge_find (find-before-creating works on this path too).
+			expect(allows[0]).toContain("knowledge_find");
+		} finally {
+			await host.close();
+		}
+	});
+});

@@ -99,7 +99,10 @@ export async function reviewDigest(deps, conversationId) {
     const allow = [
         ...new Set([
             "skill_manage",
-            ...targets.flatMap((target) => [...target.tools]),
+            ...targets.flatMap((target) => [
+                ...target.tools,
+                ...(target.readTools ?? []),
+            ]),
             ...(selection.includes("read") ? ["read"] : []),
         ]),
     ];
