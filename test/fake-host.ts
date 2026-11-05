@@ -350,6 +350,10 @@ export async function createFakeHost(
 			record("curation.tools", id);
 			return [];
 		},
+		wantsReview: async (user, id) => {
+			record("curation.wantsReview", user, id);
+			return false;
+		},
 		forkReview: async (id, opts) => {
 			record("curation.forkReview", id, opts);
 			return notScripted("forkReview");
@@ -789,6 +793,17 @@ export async function createFakeHost(
 		},
 
 		curation,
+
+		publishedHooks: {
+			get: (name) => {
+				record("publishedHooks.get", name);
+				return undefined;
+			},
+			call: async (name, payload, opts) => {
+				record("publishedHooks.call", name, payload, opts);
+				return { status: "absent" };
+			},
+		},
 	};
 
 	const fake: FakeHost = {
