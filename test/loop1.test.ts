@@ -227,6 +227,159 @@ describe("loop 1: the fork-review decision", () => {
 		}
 	});
 
+	test("an owner-only answered run below the threshold is reviewed when wantsReview is true", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			host.setCuration({
+				modelCallsSince: async () => 3,
+				takeHints: async () => [],
+				wantsReview: async () => true,
+				forkReview: async () => COMPLETED,
+			});
+			await fire(loop, host, answered(id));
+			await queue.idle();
+
+			expect(curationCalls(host.calls, "forkReview")).toBe(1);
+			expect(curationCalls(host.calls, "wantsReview")).toBe(1);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("below the threshold and wantsReview false: no review", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			host.setCuration({
+				modelCallsSince: async () => 3,
+				takeHints: async () => [],
+				wantsReview: async () => false,
+				forkReview: async () => COMPLETED,
+			});
+			await fire(loop, host, answered(id));
+			await queue.idle();
+
+			expect(curationCalls(host.calls, "forkReview")).toBe(0);
+			expect(curationCalls(host.calls, "wantsReview")).toBe(1);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an unanswered run is not reviewed by wantsReview alone", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			host.setCuration({
+				takeHints: async () => [],
+				wantsReview: async () => true,
+				forkReview: async () => COMPLETED,
+			});
+			await fire(loop, host, unanswered(id));
+			await queue.idle();
+
+			expect(curationCalls(host.calls, "forkReview")).toBe(0);
+			// Answered-only: the flag persists until the next answered
+			// settle — the loop never even asks on an unanswered run.
+			expect(curationCalls(host.calls, "wantsReview")).toBe(0);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an owner-only answered run at the threshold never asks wantsReview", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			host.setCuration({
+				modelCallsSince: async () => 10,
+				takeHints: async () => [],
+				wantsReview: async () => {
+					throw new Error("must not be asked at/over the threshold");
+				},
+				forkReview: async () => COMPLETED,
+			});
+			await fire(loop, host, answered(id));
+			await queue.idle();
+
+			expect(curationCalls(host.calls, "forkReview")).toBe(1);
+			expect(curationCalls(host.calls, "wantsReview")).toBe(0);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a mixed-authorship conversation ignores wantsReview", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			host.setCuration({
+				eligibility: async () => ({
+					owner: ALICE,
+					internal: false,
+					ownerOnly: false,
+					unattributed: 2,
+				}),
+				modelCallsSince: async () => 3,
+				takeHints: async () => [],
+				wantsReview: async () => {
+					throw new Error("the digest path never asks wantsReview");
+				},
+				forkReview: async () => {
+					throw new Error("a mixed conversation must never be forked");
+				},
+			});
+			await fire(loop, host, answered(id));
+			await queue.idle();
+
+			expect(curationCalls(host.calls, "wantsReview")).toBe(0);
+			expect(curationCalls(host.calls, "forkReview")).toBe(0);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("the review allow-list contains each served target's readTools", async () => {
+		const { host, id, queue, loop } = await setup();
+		try {
+			let allow: readonly string[] | undefined;
+			host.setCuration({
+				modelCallsSince: async () => 10,
+				takeHints: async () => [],
+				targets: async () => [
+					{
+						id: "memory",
+						tools: ["memory_write"],
+						readTools: ["memory_search", "memory_read"],
+						guidance: [],
+						maintain: false,
+					},
+					{
+						id: "notes",
+						tools: ["notes_write"],
+						guidance: [],
+						maintain: false,
+					},
+				],
+				tools: async () => ["memory_write", "notes_write"],
+				forkReview: async (_id, opts) => {
+					allow = opts.allow;
+					return COMPLETED;
+				},
+			});
+			await fire(loop, host, answered(id));
+			await queue.idle();
+
+			// readTools ?? [] merge in; a target without readTools adds
+			// nothing.
+			expect(allow).toEqual([
+				"skill_manage",
+				"memory_write",
+				"memory_search",
+				"memory_read",
+				"notes_write",
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("hints trigger immediately, even after an unanswered run", async () => {
 		const { host, id, queue, loop } = await setup();
 		try {

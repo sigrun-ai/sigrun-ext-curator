@@ -19,8 +19,9 @@
  *    (`pending-hints.json` — hints a previous review consumed but
  *    never reviewed), count `modelCallsSince(id, lastReviewedEntry)`,
  *    and review when hints are pending (answered or not — an aborted
- *    run's hints stay pending until the next settle) or the run
- *    answered at/over the threshold;
+ *    run's hints stay pending until the next settle), the run answered
+ *    at/over the threshold, or a served target asks (`wantsReview`,
+ *    consulted only below the threshold on an answered run);
  * 4. anything else (mixed authorship, unattributed entries) → the
  *    threshold trigger alone queues a `queueDigest` entry: never
  *    forked, handed to loop 2 (Task B4). (Hints ride in that durable
@@ -29,7 +30,8 @@
  *    no hint can wait on both.)
  *
  * The review itself: the allow-list is `skill_manage` + the served
- * targets' tools + `read` when the parent's selection carries it; the
+ * targets' tools and read tools + `read` when the parent's selection
+ * carries it; the
  * bounds are the spec's (8 tool calls, 2048 output tokens, 2 minutes);
  * a watch on the parent aborts the run's signal the moment the parent
  * moves. Success anchors the per-conversation cursor
@@ -118,8 +120,14 @@ export function createLoop1(deps) {
                 return;
             const cursors = await readCursors(deps.host, owner);
             const calls = await deps.host.curation.modelCallsSince(id, cursors.lastReviewedEntry[String(id)]);
-            if (calls < threshold)
+            // Below the threshold, ask the served targets (C5): a research
+            // run's target flags its own review. Asked ONLY here — at/over
+            // the threshold the review fires regardless (one call saved
+            // per settle), and an unanswered run never asks (the flag
+            // persists until the next answered settle; nothing is lost).
+            if (calls < threshold && !(await deps.host.curation.wantsReview(owner, id))) {
                 return;
+            }
         }
         deps.queue.enqueue({
             user: owner,
@@ -150,7 +158,10 @@ export function createLoop1(deps) {
         const allow = [
             ...new Set([
                 "skill_manage",
-                ...targets.flatMap((target) => [...target.tools]),
+                ...targets.flatMap((target) => [
+                    ...target.tools,
+                    ...(target.readTools ?? []),
+                ]),
                 ...(selection.includes("read") ? ["read"] : []),
             ]),
         ];
