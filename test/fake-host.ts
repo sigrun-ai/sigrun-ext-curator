@@ -661,6 +661,8 @@ export async function createFakeHost(
 				record("jobs.get", id);
 				return undefined;
 			},
+			activeRun: async () => undefined,
+			isJobRun: async () => false,
 		},
 
 		notify: async (input) => {
@@ -779,6 +781,9 @@ export async function createFakeHost(
 				record("models.list");
 				return models;
 			},
+			complete: async () => {
+				throw new Error("fake host: models.complete is not implemented");
+			},
 		},
 
 		commands: {
@@ -803,6 +808,17 @@ export async function createFakeHost(
 				record("publishedHooks.call", name, payload, opts);
 				return { status: "absent" };
 			},
+		},
+
+		declineInteraction: async () => {
+			throw new Error("fake host: declineInteraction is not implemented");
+		},
+
+		decisions: {
+			evaluate: async () => {
+				throw new Error("fake host: decisions.evaluate is not implemented");
+			},
+			list: async () => [],
 		},
 	};
 
