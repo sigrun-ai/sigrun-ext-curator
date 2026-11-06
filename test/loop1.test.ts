@@ -873,6 +873,51 @@ describe("loop 1: the fork-review decision", () => {
 			await host.close();
 		}
 	});
+	test("loop1 churn survives long conversations", async () => {
+		// pi-durable 1.5.0 keeps full raw history in the view (D1-A): a
+		// 150-entry conversation's watch frames still carry every entry,
+		// so the baseline/churn comparison must hold at real lengths.
+		const { host, id, queue, loop } = await setup();
+		try {
+			let signal: AbortSignal | undefined;
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let started!: () => void;
+			const startedGate = new Promise<void>((resolve) => {
+				started = resolve;
+			});
+			host.setCuration({
+				modelCallsSince: async () => 10,
+				takeHints: async () => [],
+				forkReview: async (_id, opts) => {
+					signal = opts.signal;
+					started();
+					await gate;
+					return COMPLETED;
+				},
+			});
+
+			const pending = fire(loop, host, answered(id));
+			await startedGate;
+			expect(signal).toBeDefined();
+			expect(signal?.aborted).toBe(false);
+
+			// Baseline frame of 150 entries is the snapshot, never churn;
+			// the 151st entry is genuine churn and fires the abort.
+			host.pushView(id, viewWith(150));
+			expect(signal?.aborted).toBe(false);
+			host.pushView(id, viewWith(151));
+			expect(signal?.aborted).toBe(true);
+
+			release();
+			await pending;
+			await queue.idle();
+		} finally {
+			await host.close();
+		}
+	});
 });
 
 /** One minimal watch frame carrying `count` model entries. */
