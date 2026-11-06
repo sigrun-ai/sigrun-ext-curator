@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `curator-tick` now carries a description ("The curator's idle pass: every 15 minutes it reviews
+  learned skills and memory for each user."), shown as its subtitle in the Jobs view (requires
+  sigrun core with `JobSpec.description`).
+
 ### Fixed
 
 - Loop-2 digest reviews: served targets' read tools join the digest

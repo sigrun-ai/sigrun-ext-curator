@@ -140,6 +140,8 @@ export default function createCurator(
 				name: CURATOR_TICK_JOB,
 				schedule: { every: "15m" },
 				action: { kind: "task", task: CURATOR_TICK_TASK },
+				description:
+					"The curator's idle pass: every 15 minutes it reviews learned skills and memory for each user.",
 			},
 		],
 		commands: [createLearnCommand(host, loop1.learnNow)],
