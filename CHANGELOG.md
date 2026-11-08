@@ -5,16 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-11-08
+
+### Changed
+
+- Clicking a review in the change feed opens the review page instead of
+  undoing it; undo is an explicit **Undo review** button in a callout with a
+  confirm. The review page lists the review's changes (learned-store rows
+  open the skill in core Skills; overlay rows explain they open from Skills),
+  shows the undone state with a pointer back to Skills, and a deep link older
+  than the recent changes keeps its undo. `undoReview` now requires the
+  `review` view param (the notice's Undo action is unchanged). The restore
+  path requires sigrun core with the Skills restore fix (core 0.11.2).
+
 ## [0.3.3] - 2026-11-07
 
 ## [Unreleased]
 
 ### Changed
 
-- Clicking a review in the Curator feed now opens its change page instead
-  of undoing it. **Undo review** lives in a confirmed callout on that
-  page; the page's Skills restore path requires sigrun core with the
-  Skills archived-skill restore fix.
 - peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
 
 ## [0.3.2] - 2026-11-06
