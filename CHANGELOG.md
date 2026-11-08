@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Clicking a review in the Curator feed now opens its change page instead
+  of undoing it. **Undo review** lives in a confirmed callout on that
+  page; the page's Skills restore path requires sigrun core with the
+  Skills archived-skill restore fix.
 - peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
 
 ## [0.3.2] - 2026-11-06

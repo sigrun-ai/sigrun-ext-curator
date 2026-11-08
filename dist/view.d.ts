@@ -1,55 +1,26 @@
 /**
- * The curator view (`src/view.ts`, tabs+skills Task 13): the per-user
- * surface the notice and the core Skills history link navigate to —
- * the change FEED (newest 50) with an **Undo review** action per
- * review, and a pause switch. Skill management (list, pin,
- * archive/restore, overlays) moved to the core Skills view when it
- * landed (core-views/skills.ts): this view lists no learned skills and
- * no overlays any more, and its **Skills** page action navigates
- * `{target:{view:{extension:"core", id:"skills"}}}`.
+ * The curator view: a per-user change feed (newest 50) whose reviews
+ * open a detail page. Clicking a feed row only navigates; Undo review
+ * is a confirmed callout action on the detail page, never a feed
+ * activation. The feed page also carries the pause switch and a link
+ * to core Skills, where skill management now lives.
  *
- * A `review` param filters the feed to that review's commits (the core
- * skills history's curator-commit link and the notice both navigate
- * here with it). Feed entry ids are commit SHAs in the user's curation
- * history repo (tabs+skills Task 9), so the undo groups key on the
- * SHA, never on the review id: a review reverted through
- * `host.curation.undoReview` needs every commit the review authored,
- * and grouping by review id would merge two interleaved reviews into
- * one undo. Actors render as their names — `curator`, `agent`, the
- * user, and `outside sigrun` for catch-up commits the store itself
- * did not author (the git trailer's actor name).
+ * A `review` param selects the detail page (the core Skills history
+ * and the notice navigate with it). Its change rows key on commit SHA
+ * and open the changed skill in core Skills; overlay rows explain that
+ * they open from Skills instead. Reviews beyond the bounded feed walk
+ * retain their deep link and Undo action.
  *
- * Access follows `accessOf` (spec P8: "the user, plus the superuser as
- * with conversations"): the resource is the caller's OWN curation data,
- * so a signed-in user is its owner ("write") and an anonymous caller
- * has no instance at all ("none" — accessOf's ownerless rule would
- * otherwise widen to household write, so the anonymous case is gated by
- * hand). Every render and action resolves the CALLING principal's own
- * stores — bob's instance reads bob's data, never alice's — and the
- * per-principal `instanceKey` keeps two users' views apart as surface
- * instances.
+ * Access follows `accessOf`: a signed-in principal owns their curation
+ * data, the service principal is the superuser, and an anonymous caller
+ * has no instance. Every render and action reads the calling
+ * principal's own stores, with a per-principal `instanceKey`.
  *
- * The actions (what an ambient record can never carry — a view's action
- * routes DO reach the extension). Per-item actions ride the block
- * set's item-scoped dispatches, which carry `{itemId}`:
- *
- * - `undoReview` — the feed collection's `onActivate`
- *   (`{itemId: groupId}` where the group id is `review-<newest sha>`):
- *   resolves the sha back to the entry's review id through the feed
- *   (core's `undoReview` matches `entry.reviewId`, never the group
- *   key), then `host.curation.undoReview`, then clears the notice by
- *   key (`host.notices.clear({user, key: "review:<reviewId>"})` — the
- *   core notice pile replaced the ambient record + ledger, notices
- *   Task 9); a commit with no review id answers "Nothing to undo"
- *   without calling the host;
- * - `setPaused` — the page header's pause button (a submit dispatching
- *   `{}`): toggles the user's `paused` setting, read live by both
- *   loops — pausing takes effect on the next event, restart-free.
- *
- * The tree is data-driven where the block set binds (item templates
- * over literal rows); the whole tree passes the server's own
- * `validateTree` (pinned in the tests) because the server runs that
- * exact walk before serving.
+ * Actions: `openReview` resolves a feed group SHA to its review id;
+ * `openChangeSkill` resolves a review's commit SHA to its skill;
+ * `undoReview` requires the page's review param, reverts it, then
+ * clears `review:<reviewId>`; `setPaused` toggles the user's setting.
+ * Every tree passes core's `validateTree` in the tests.
  */
 import type { CurationFeedEntry, Principal, SigrunHost, SurfaceDef } from "@sigrun/sigrun/extension";
 import type { Access } from "@sigrun/shared/access";
@@ -73,6 +44,23 @@ export interface ReviewGroup {
         readonly reason?: string;
     }[];
 }
+/** One non-undo change on a review page (the id is its commit SHA). */
+export interface ReviewChange {
+    readonly id: string;
+    readonly skill: string;
+    readonly action: string;
+    readonly actor: string;
+    readonly at: string;
+    readonly archived: boolean;
+}
+/** The selected review, including a deep link the bounded walk missed. */
+export interface ReviewDetail {
+    readonly id: string;
+    readonly at: string | undefined;
+    readonly undoneAt?: string;
+    readonly changes: readonly ReviewChange[];
+    readonly missed: boolean;
+}
 /** The view's data document (everything the tree binds against). */
 export interface CuratorViewData {
     readonly user: string;
@@ -82,6 +70,7 @@ export interface CuratorViewData {
      *  (the empty state is then "older than the recent changes", never
      *  the false "Nothing learned yet"). */
     readonly reviewMissed: boolean;
+    readonly review?: ReviewDetail;
 }
 /**
  * Resolve one principal's access to their per-user view instance (spec
@@ -102,5 +91,7 @@ export declare function actorLabel(entry: CurationFeedEntry): string;
  *  exactly the commits it authored. An entry with no reviewId groups
  *  alone (a lone commit is never undoable as a review). */
 export declare function groupFeed(feed: readonly CurationFeedEntry[]): readonly ReviewGroup[];
+/** Resolve a feed group's `review-<sha>` coordinate to its review id. */
+export declare function resolveReviewId(host: SigrunHost, user: string, groupId: string): Promise<string | undefined>;
 /** The view surface (`SurfaceDef<"view">`), built over the host. */
 export declare function createCuratorView(host: SigrunHost): SurfaceDef<"view">;

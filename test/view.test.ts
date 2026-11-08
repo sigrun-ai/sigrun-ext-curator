@@ -1,11 +1,7 @@
 /**
- * The curator view tests (`src/view.ts`, tabs+skills Task 13): the
- * per-user surface is the FEED — the change history grouped by review
- * with an Undo review action, each entry carrying its actor (curator /
- * agent / user / outside sigrun) — plus a pause switch and a page
- * action navigating to the core Skills view (skill CRUD moved there
- * with Task 12's core/skills; this view lists no learned skills and
- * no overlays any more).
+ * The curator view tests (`src/view.ts`): the per-user surface is a
+ * change feed whose rows open a review page. Undo lives only in that
+ * page's confirming callout; change rows navigate to core Skills.
  *
  * The contract under test:
  *
@@ -13,17 +9,16 @@
  *   and access follows `accessOf` over an owner-shaped resource: the
  *   owner and the superuser see their data ("write"); any other user
  *   gets `none` (bob sees nothing — not alice's feed).
- * - A `review` param filters the feed to that one review (the core
- *   skills view's curator-commit link navigates here with it; the
- *   notice does too).
+ * - A `review` param renders that review's non-undo changes, oldest
+ *   first, and retains a deep link even beyond the bounded feed walk.
  * - Feed entries group by their commit SHA (the feed `id`), not by
- *   review id: an undo needs every commit of one review, and a review
- *   whose commits interleave another's must not merge into it.
+ *   review id: a review whose commits interleave another's must not
+ *   merge into it.
  * - An outside-actor entry renders as "outside sigrun" (catch-up
- *   commits the store did not author, Task 9's actor widening).
- * - The surface's `actions` reach the extension: `undoReview` reverts
- *   through `host.curation.undoReview` and then clears the notice by
- *   key (`host.notices.clear({user, key: "review:<reviewId>"})`);
+ *   commits the store did not author).
+ * - The surface's `actions` reach the extension: `openReview` only
+ *   navigates, `openChangeSkill` resolves the commit SHA to its skill,
+ *   `undoReview` reverts the param's review and clears its notice, and
  *   `setPaused` writes the settings.
  * - The tree validates against the server's own `validateTree`
  *   (placement `view`, handlers = the declared action keys) — the
@@ -33,6 +28,7 @@
 import { describe, expect, test } from "vitest";
 import type {
 	CurationFeedEntry,
+	CurationSkillInfo,
 	Principal,
 	SurfaceContext,
 } from "@sigrun/sigrun/extension";
@@ -42,6 +38,7 @@ import type { FakeHost } from "./fake-host.js";
 import { createCuratorView } from "../src/view.js";
 import { notify } from "../src/notices.js";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import type { PageBlock } from "@sigrun/shared/blocks";
 
 /** The users these fixtures walk (tests own their literals). */
 const ALICE = "alice";
@@ -78,7 +75,9 @@ function scriptFeed(
 ): void {
 	host.setCuration({
 		skills: (user) => ({
-			list: async () => [],
+			list: async () => (feeds[user] ?? feed).map((entry) =>
+				skillInfo(entry.skill, entry.action === "archive"),
+			),
 			feed: async (limit) => (feeds[user] ?? feed).slice(0, limit),
 			pin: async () => undefined,
 			view: async () => "",
@@ -92,6 +91,52 @@ function scriptFeed(
 			}),
 		}),
 	});
+}
+
+/** Render and validate with the same server gate the surface route uses. */
+async function renderView(
+	view: ReturnType<typeof createCuratorView>,
+	ctx: SurfaceContext,
+) {
+	const rendered = await view.render(ctx);
+	expect(
+		validateTree(rendered.tree, {
+			placement: "view",
+			handlers: new Set(Object.keys(view.actions ?? {})),
+		}),
+	).toMatchObject({ ok: true });
+	return rendered;
+}
+
+/** Recursively find blocks of one type. */
+function blocksOfType(tree: unknown, type: string): Record<string, any>[] {
+	const found: Record<string, any>[] = [];
+	const visit = (value: unknown): void => {
+		if (Array.isArray(value)) {
+			for (const entry of value) visit(entry);
+		} else if (typeof value === "object" && value !== null) {
+			const record = value as Record<string, unknown>;
+			if (record.type === type) found.push(record);
+			for (const entry of Object.values(record)) visit(entry);
+		}
+	};
+	visit(tree);
+	return found;
+}
+
+/** One complete learned-skill listing row. */
+function skillInfo(
+	name: string,
+	archived = false,
+): CurationSkillInfo {
+	return {
+		name,
+		description: `${name} description`,
+		archived,
+		pinned: false,
+		bytes: 100,
+		createdAt: "2026-11-01T00:00:00.000Z",
+	};
 }
 
 /** One feed entry fixture (newest first; the id is the commit SHA). */
@@ -138,12 +183,49 @@ describe("the curator view", () => {
 		}
 	});
 
+	test("the feed activates openReview, never undoReview", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			const view = createCuratorView(host);
+			const rendered = await renderView(view, ctxOf(ALICE));
+			const feed = blocksOfType(rendered.tree, "collection").find(
+				(block) => block.id === "reviews",
+			);
+			expect(feed?.onActivate).toEqual({ type: "edit", name: "openReview" });
+			expect(JSON.stringify(rendered.tree)).not.toContain('"undoReview"');
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("clicking a feed item navigates to its review and reverts nothing", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			const view = createCuratorView(host);
+			const result = await view.actions!["openReview"]?.(
+				ctxOf(ALICE),
+				{ itemId: "review-0a" },
+			);
+			expect(result).toEqual({
+				ok: true,
+				navigate: { type: "navigate", params: { review: "review-acme" } },
+			});
+			expect(
+				host.calls.filter((call) => call.method === "curation.undoReview"),
+			).toHaveLength(0);
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("the view links to core skills and lists no learned skills", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, []);
 			const view = createCuratorView(host);
-			const rendered = await view.render(ctxOf(ALICE));
+			const rendered = await renderView(view, ctxOf(ALICE));
 			expect(rendered.access).toBe("write");
 			const text = JSON.stringify(rendered.tree);
 			// The page action navigates to the core skills view (skill
@@ -160,13 +242,6 @@ describe("the curator view", () => {
 			const data = JSON.stringify(rendered.data);
 			expect(data).not.toContain('"skills"');
 			expect(data).not.toContain('"overlays"');
-			// The tree validates against the server's own walk (placement
-			// view; handler names must resolve to the declared actions).
-			const verdict = validateTree(rendered.tree, {
-				placement: "view",
-				handlers: new Set(Object.keys(view.actions ?? {})),
-			});
-			expect(verdict.ok).toBe(true);
 		} finally {
 			await host.close();
 		}
@@ -180,7 +255,7 @@ describe("the curator view", () => {
 				feedEntry("aa0002", { actor: "outside", skill: "deploy-staging" }),
 			]);
 			const view = createCuratorView(host);
-			const rendered = await view.render(ctxOf(ALICE));
+			const rendered = await renderView(view, ctxOf(ALICE));
 			// The ROW carries the outside label (the git trailer's actor
 			// name), not just the section blurb.
 			expect(JSON.stringify(rendered.tree)).toContain(
@@ -208,7 +283,7 @@ describe("the curator view", () => {
 				feedEntry("aa0003", { reviewId: "review-a", skill: "three" }),
 			]);
 			const view = createCuratorView(host);
-			const rendered = await view.render(ctxOf(ALICE));
+			const rendered = await renderView(view, ctxOf(ALICE));
 			// Three groups, one per same-review RUN — the two review-a
 			// commits never merge into one undo.
 			expect(reviewIds(rendered.tree)).toEqual([
@@ -231,14 +306,14 @@ describe("the curator view", () => {
 			const view = createCuratorView(host);
 
 			// Unfiltered: both reviews render.
-			const all = await view.render(ctxOf(ALICE));
+			const all = await renderView(view, ctxOf(ALICE));
 			const allText = JSON.stringify(all.tree);
 			expect(allText).toContain("deploy-staging");
 			expect(allText).toContain("release-flow");
 
 			// Anchored at review-a (the core skills link's target): only
 			// its commits render.
-			const one = await view.render(ctxOf(ALICE, { review: "review-a" }));
+			const one = await renderView(view, ctxOf(ALICE, { review: "review-a" }));
 			const oneText = JSON.stringify(one.tree);
 			expect(oneText).toContain("deploy-staging");
 			expect(oneText).not.toContain("release-flow");
@@ -279,7 +354,7 @@ describe("the curator view", () => {
 				}),
 			});
 			const view = createCuratorView(host);
-			const rendered = await view.render(ctxOf(ALICE, { review: "review-old" }));
+			const rendered = await renderView(view, ctxOf(ALICE, { review: "review-old" }));
 			const text = JSON.stringify(rendered.tree);
 			// The older review's commit renders — the deep-link found it
 			// on page 2 (the walk paged with the last sha of page 1).
@@ -317,7 +392,7 @@ describe("the curator view", () => {
 				}),
 			});
 			const view = createCuratorView(host);
-			const rendered = await view.render(ctxOf(ALICE, { review: "review-ancient" }));
+			const rendered = await renderView(view, ctxOf(ALICE, { review: "review-ancient" }));
 			const text = JSON.stringify(rendered.tree);
 			// The distinct message — never the false "Nothing learned yet".
 			expect(text).toContain("This review is older than the recent changes");
@@ -358,7 +433,7 @@ describe("the curator view", () => {
 				}),
 			});
 			const view = createCuratorView(host);
-			const rendered = await view.render(ctxOf(ALICE, { review: "review-ancient" }));
+			const rendered = await renderView(view, ctxOf(ALICE, { review: "review-ancient" }));
 			const text = JSON.stringify(rendered.tree);
 			expect(text).toContain("This review is older than the recent changes");
 			expect(text).not.toContain("Nothing learned yet");
@@ -397,7 +472,7 @@ describe("the curator view", () => {
 				}),
 			});
 			const view = createCuratorView(host);
-			const rendered = await view.render(ctxOf(ALICE));
+			const rendered = await renderView(view, ctxOf(ALICE));
 			const text = JSON.stringify(rendered.tree);
 			expect(text).toContain("recent-0");
 			expect(text).not.toContain("deeper");
@@ -423,7 +498,7 @@ describe("the curator view", () => {
 		);
 			const view = createCuratorView(host);
 
-			const rendered = await view.render(ctxOf(ALICE));
+			const rendered = await renderView(view, ctxOf(ALICE));
 			expect(rendered.access).toBe("write");
 			const text = JSON.stringify(rendered.tree);
 			// Every feed row renders (skill, action, sha) and the two
@@ -440,7 +515,7 @@ describe("the curator view", () => {
 
 			// bob: his OWN instance — write access to his own feed
 			// (bob-notes), and NONE of alice's content leaks into it.
-			const bobs = await view.render(ctxOf(BOB));
+			const bobs = await renderView(view, ctxOf(BOB));
 			expect(bobs.access).toBe("write");
 			const bobText = JSON.stringify(bobs.tree);
 			expect(bobText).toContain("bob-notes");
@@ -456,7 +531,222 @@ describe("the curator view", () => {
 		}
 	});
 
-	test("undo resolves the group sha back to the review id before dispatch", async () => {
+	test("the review page offers Undo review in a callout with a confirm", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			const view = createCuratorView(host);
+			const rendered = await renderView(
+				view,
+				ctxOf(ALICE, { review: "review-acme" }),
+			);
+			expect(
+				(rendered.tree.root as PageBlock).actions?.map((action) => action.id),
+			).toEqual([
+				"back-to-feed",
+				"open-skills",
+			]);
+			const callout = blocksOfType(rendered.tree, "callout").find(
+				(block) => block.id === "undo-callout",
+			);
+			expect(callout?.actions).toEqual([
+				{
+					id: "undo-review",
+					label: "Undo review",
+					action: {
+						type: "submit",
+						name: "undoReview",
+						confirm: {
+							title: "Undo this review?",
+							body: "Reverts every change this review made. Archived skills can be restored from Skills.",
+							tone: "warn",
+							confirmLabel: "Undo",
+						},
+					},
+				},
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("undoReview without a review param refuses", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			const view = createCuratorView(host);
+			expect(
+				await view.actions!["undoReview"]?.(ctxOf(ALICE), {
+					itemId: "review-0a",
+				}),
+			).toEqual({ ok: false, error: { message: "undoReview needs a review" } });
+			expect(
+				host.calls.filter((call) => call.method === "curation.undoReview"),
+			).toHaveLength(0);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an undone review shows Undone and no Undo button", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			const undo = feedEntry("0b", {
+				reviewId: "review-acme",
+				action: "undo",
+			});
+			scriptFeed(host, [
+				undo,
+				feedEntry("0a", {
+					reviewId: "review-acme",
+					action: "create",
+					skill: "acme-skill",
+				}),
+			]);
+			const view = createCuratorView(host);
+			const rendered = await renderView(
+				view,
+				ctxOf(ALICE, { review: "review-acme" }),
+			);
+			expect(JSON.stringify(rendered.tree)).not.toContain('"undo-review"');
+			const callout = blocksOfType(rendered.tree, "callout").find(
+				(block) => block.id === "undo-callout",
+			);
+			expect(callout?.title).toMatch(/^Undone/);
+			const detail = rendered.data.review as unknown as {
+				undoneAt?: string;
+				changes: readonly unknown[];
+			};
+			expect(detail).toMatchObject({ undoneAt: undo.at });
+			expect(detail.changes).toMatchObject([
+				{ id: "0a", action: "create", skill: "acme-skill" },
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a group without a review id opens with nothing to review", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [feedEntry("0c", { actor: "outside" })]);
+			const view = createCuratorView(host);
+			const result = await view.actions!["openReview"]?.(
+				ctxOf(ALICE),
+				{ itemId: "review-0c" },
+			);
+			expect(result).toEqual({ ok: true, toast: "Nothing to review" });
+			expect(result).not.toHaveProperty("navigate");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("change rows key on the commit sha and open the skill in core Skills", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [
+				feedEntry("0b", { reviewId: "review-acme", action: "patch", skill: "acme-skill" }),
+				feedEntry("0a", { reviewId: "review-acme", action: "create", skill: "acme-skill" }),
+			]);
+			const view = createCuratorView(host);
+			const ctx = ctxOf(ALICE, { review: "review-acme" });
+			const rendered = await renderView(view, ctx);
+			const changes = blocksOfType(rendered.tree, "collection").find(
+				(block) => block.id === "changes",
+			);
+			expect(changes?.items.map((item: { id: string }) => item.id)).toEqual(["0a", "0b"]);
+			expect(changes?.onActivate).toEqual({ type: "edit", name: "openChangeSkill" });
+			expect(await view.actions!["openChangeSkill"]?.(ctx, { itemId: "0a" })).toEqual({
+				ok: true,
+				navigate: {
+					type: "navigate",
+					target: {
+						view: {
+							extension: "core",
+							id: "skills",
+							params: { skill: "acme-skill", root: "learned" },
+						},
+					},
+				},
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an overlay change row does not navigate", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [
+				feedEntry("0a", { reviewId: "review-acme", action: "overlay", skill: "acme-skill" }),
+			]);
+			const view = createCuratorView(host);
+			const result = await view.actions!["openChangeSkill"]?.(
+				ctxOf(ALICE, { review: "review-acme" }),
+				{ itemId: "0a" },
+			);
+			expect(result).toEqual({ ok: true, toast: "Overlays open from Skills." });
+			expect(result).not.toHaveProperty("navigate");
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an older review reached by deep link keeps its Undo", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			scriptFeed(host, [feedEntry("0a", { reviewId: "review-other" })]);
+			const view = createCuratorView(host);
+			const rendered = await renderView(
+				view,
+				ctxOf(ALICE, { review: "review-acme" }),
+			);
+			expect(JSON.stringify(rendered.tree)).toContain(
+				"This review is older than the recent changes.",
+			);
+			const callout = blocksOfType(rendered.tree, "callout").find(
+				(block) => block.id === "undo-callout",
+			);
+			expect(callout?.actions?.some((action: { id: string }) => action.id === "undo-review")).toBe(true);
+			expect((rendered.data.review as { missed: boolean }).missed).toBe(true);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an archived change has a literal Archived badge only on that row", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			host.setCuration({
+				skills: () => ({
+					list: async () => [skillInfo("acme-archived", true), skillInfo("acme-live")],
+					feed: async () => [
+						feedEntry("0b", { reviewId: "review-acme", skill: "acme-live" }),
+						feedEntry("0a", { reviewId: "review-acme", skill: "acme-archived" }),
+					],
+					pin: async () => undefined,
+					view: async () => "",
+					undo: async () => [],
+					apply: async (name, change) => feedEntry(name, { action: change.kind }),
+				}),
+			});
+			const view = createCuratorView(host);
+			const rendered = await renderView(
+				view,
+				ctxOf(ALICE, { review: "review-acme" }),
+			);
+			const changes = blocksOfType(rendered.tree, "collection").find(
+				(block) => block.id === "changes",
+			);
+			expect(changes?.items[0].badges).toEqual([{ text: "Archived", tone: "neutral" }]);
+			expect(changes?.items[1].badges).toBeUndefined();
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("the review page's Undo review reverts the review and clears the notice", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			const conversation = (await host.conversations.create({
@@ -480,9 +770,10 @@ describe("the curator view", () => {
 			host.setCuration({ undoReview: async () => 1 });
 
 			const view = createCuratorView(host);
-			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "review-aa0001",
-			});
+			const result = await view.actions!["undoReview"](
+				ctxOf(ALICE, { review: "review-3" }),
+				{},
+			);
 			expect(result).toMatchObject({ ok: true });
 
 			// The host received the RESOLVED review id — never the sha
@@ -537,7 +828,7 @@ describe("the curator view", () => {
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "review-3" }),
-				{ itemId: "review-aa0001" },
+				{},
 			);
 			expect(result).toMatchObject({ ok: true });
 			const undos = host.calls.filter(
@@ -550,18 +841,17 @@ describe("the curator view", () => {
 		}
 	});
 
-	test("a bare review id still undoes (the pre-upgrade coordinate)", async () => {
+	test("a deep-linked undo dispatches the param's review id", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [
 				feedEntry("aa0001", { reviewId: "review-3", skill: "deploy-staging" }),
 			]);
 			const view = createCuratorView(host);
-			// No `review-` prefix, and no entry whose id is "review-3":
-			// the sha lookup misses, the reviewId fallback resolves.
-			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "review-3",
-			});
+			const result = await view.actions!["undoReview"](
+				ctxOf(ALICE, { review: "review-3" }),
+				{},
+			);
 			expect(result).toMatchObject({ ok: true });
 			const undos = host.calls.filter(
 				(call) => call.method === "curation.undoReview",
@@ -573,26 +863,25 @@ describe("the curator view", () => {
 		}
 	});
 
-	test("an undo group for a commit without a review undoes nothing", async () => {
+	test("an unknown deep-linked review still asks the host to undo it", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("aa0009", { skill: "vendor-notes" })]);
 			const view = createCuratorView(host);
-			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "review-aa0009",
-			});
-			// A lone commit has no review to revert — and the host is
-			// never asked.
+			const result = await view.actions!["undoReview"](
+				ctxOf(ALICE, { review: "review-aa0009" }),
+				{},
+			);
 			expect(result).toEqual({ ok: true, toast: "Nothing to undo" });
 			expect(
 				host.calls.filter((call) => call.method === "curation.undoReview"),
-			).toHaveLength(0);
+			).toHaveLength(1);
 		} finally {
 			await host.close();
 		}
 	});
 
-	test("the view's Undo review reverts the review and clears the notice", async () => {
+	test("the review page's Undo review reverts the review and clears its posted notice", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
 		try {
 			const conversation = (await host.conversations.create({
@@ -625,11 +914,11 @@ describe("the curator view", () => {
 			const action = view.actions?.["undoReview"];
 			expect(action).toBeDefined();
 
-			// The feed's onActivate dispatch: {itemId: the group key
-			// (review-<sha>)} — the handler resolves the review id.
+			// The callout button submits an empty payload; the page's
+			// review param supplies the id.
 			const result = await action!(
-				ctxOf(ALICE),
-				{ itemId: "review-aa0001" },
+				ctxOf(ALICE, { review: "review-acme" }),
+				{},
 			);
 			expect(result).toMatchObject({ ok: true });
 
@@ -656,9 +945,10 @@ describe("the curator view", () => {
 				},
 			});
 			const view = createCuratorView(host);
-			await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "review-dd0001",
-			});
+			await view.actions!["undoReview"](
+				ctxOf(ALICE, { review: "digest-old" }),
+				{},
+			);
 			expect(undone).toEqual([`${ALICE}:digest-old`]);
 			// The clear-by-key runs unconditionally (a notice-less clear
 			// is a no-op in the core store), but no ambient write ever
@@ -677,9 +967,8 @@ describe("the curator view", () => {
 	test("a rejecting undoReview action returns a named error (never a thrown action)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
-			// The feed must carry the dispatched group key's sha, so the
-			// sha→reviewId resolution reaches the throwing undoReview (an
-			// empty feed answers "Nothing to undo" before the host runs).
+			// The param names the review directly, so a host failure is
+			// returned as a named action error.
 			scriptFeed(host, [
 				{
 					id: "acme",
@@ -698,9 +987,10 @@ describe("the curator view", () => {
 				},
 			});
 			const view = createCuratorView(host);
-			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "review-acme",
-			});
+			const result = await view.actions!["undoReview"](
+				ctxOf(ALICE, { review: "review-3" }),
+				{},
+			);
 			// The named message reaches the user as the action's error,
 			// never the surface layer's generic failure.
 			expect(result).toEqual({
@@ -741,9 +1031,10 @@ describe("the curator view", () => {
 			};
 
 			const view = createCuratorView(host);
-			const result = await view.actions!["undoReview"](ctxOf(ALICE), {
-				itemId: "review-aa0001",
-			});
+			const result = await view.actions!["undoReview"](
+				ctxOf(ALICE, { review: "review-acme" }),
+				{},
+			);
 
 			// The revert succeeded, so the reply is the undo toast — the
 			// stale notice is cosmetic, never a failed action.
@@ -779,7 +1070,7 @@ describe("the curator view", () => {
 		try {
 			scriptFeed(host, []);
 			const view = createCuratorView(host);
-			const anonymous = await view.render(ctxOf(undefined));
+			const anonymous = await renderView(view, ctxOf(undefined));
 			expect(anonymous.access).toBe("none");
 
 			// The per-user surface: bob's action runs against BOB's stores
@@ -795,9 +1086,10 @@ describe("the curator view", () => {
 					return 0;
 				},
 			});
-			const bobs = await view.actions!["undoReview"](ctxOf(BOB), {
-				itemId: "review-aa0001",
-			});
+			const bobs = await view.actions!["undoReview"](
+				ctxOf(BOB, { review: "review-acme" }),
+				{},
+			);
 			expect(bobs).toMatchObject({ ok: true });
 			expect(undone).toEqual([`${BOB}:review-acme`]);
 		} finally {

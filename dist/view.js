@@ -1,55 +1,26 @@
 /**
- * The curator view (`src/view.ts`, tabs+skills Task 13): the per-user
- * surface the notice and the core Skills history link navigate to —
- * the change FEED (newest 50) with an **Undo review** action per
- * review, and a pause switch. Skill management (list, pin,
- * archive/restore, overlays) moved to the core Skills view when it
- * landed (core-views/skills.ts): this view lists no learned skills and
- * no overlays any more, and its **Skills** page action navigates
- * `{target:{view:{extension:"core", id:"skills"}}}`.
+ * The curator view: a per-user change feed (newest 50) whose reviews
+ * open a detail page. Clicking a feed row only navigates; Undo review
+ * is a confirmed callout action on the detail page, never a feed
+ * activation. The feed page also carries the pause switch and a link
+ * to core Skills, where skill management now lives.
  *
- * A `review` param filters the feed to that review's commits (the core
- * skills history's curator-commit link and the notice both navigate
- * here with it). Feed entry ids are commit SHAs in the user's curation
- * history repo (tabs+skills Task 9), so the undo groups key on the
- * SHA, never on the review id: a review reverted through
- * `host.curation.undoReview` needs every commit the review authored,
- * and grouping by review id would merge two interleaved reviews into
- * one undo. Actors render as their names — `curator`, `agent`, the
- * user, and `outside sigrun` for catch-up commits the store itself
- * did not author (the git trailer's actor name).
+ * A `review` param selects the detail page (the core Skills history
+ * and the notice navigate with it). Its change rows key on commit SHA
+ * and open the changed skill in core Skills; overlay rows explain that
+ * they open from Skills instead. Reviews beyond the bounded feed walk
+ * retain their deep link and Undo action.
  *
- * Access follows `accessOf` (spec P8: "the user, plus the superuser as
- * with conversations"): the resource is the caller's OWN curation data,
- * so a signed-in user is its owner ("write") and an anonymous caller
- * has no instance at all ("none" — accessOf's ownerless rule would
- * otherwise widen to household write, so the anonymous case is gated by
- * hand). Every render and action resolves the CALLING principal's own
- * stores — bob's instance reads bob's data, never alice's — and the
- * per-principal `instanceKey` keeps two users' views apart as surface
- * instances.
+ * Access follows `accessOf`: a signed-in principal owns their curation
+ * data, the service principal is the superuser, and an anonymous caller
+ * has no instance. Every render and action reads the calling
+ * principal's own stores, with a per-principal `instanceKey`.
  *
- * The actions (what an ambient record can never carry — a view's action
- * routes DO reach the extension). Per-item actions ride the block
- * set's item-scoped dispatches, which carry `{itemId}`:
- *
- * - `undoReview` — the feed collection's `onActivate`
- *   (`{itemId: groupId}` where the group id is `review-<newest sha>`):
- *   resolves the sha back to the entry's review id through the feed
- *   (core's `undoReview` matches `entry.reviewId`, never the group
- *   key), then `host.curation.undoReview`, then clears the notice by
- *   key (`host.notices.clear({user, key: "review:<reviewId>"})` — the
- *   core notice pile replaced the ambient record + ledger, notices
- *   Task 9); a commit with no review id answers "Nothing to undo"
- *   without calling the host;
- * - `setPaused` — the page header's pause button (a submit dispatching
- *   `{}`): toggles the user's `paused` setting, read live by both
- *   loops — pausing takes effect on the next event, restart-free.
- *
- * The tree is data-driven where the block set binds (item templates
- * over literal rows); the whole tree passes the server's own
- * `validateTree` (pinned in the tests) because the server runs that
- * exact walk before serving.
+ * Actions: `openReview` resolves a feed group SHA to its review id;
+ * `openChangeSkill` resolves a review's commit SHA to its skill;
+ * `undoReview` requires the page's review param, reverts it, then
+ * clears `review:<reviewId>`; `setPaused` toggles the user's setting.
+ * Every tree passes core's `validateTree` in the tests.
  */
 import { accessOf } from "@sigrun/shared/access";
 import { reviewNoticeKey } from "./notices.js";
@@ -149,17 +120,49 @@ async function feedFor(host, user, review) {
             !collected.some((entry) => entry.reviewId === review),
     };
 }
+/** Resolve a feed group's `review-<sha>` coordinate to its review id. */
+export async function resolveReviewId(host, user, groupId) {
+    const sha = groupId.startsWith("review-")
+        ? groupId.slice("review-".length)
+        : groupId;
+    const feed = await host.curation.skills(user).feed(VIEW_FEED_LIMIT);
+    return (feed.find((entry) => entry.id === sha)?.reviewId ??
+        (feed.some((entry) => entry.reviewId === groupId) ? groupId : undefined));
+}
 /** Build the view's data document for one user (the render's model). */
 async function readData(host, user, review) {
     const settings = parseCuratorSettings(await host.stores.user(user).settings.get());
     const { feed, reviewMissed } = await feedFor(host, user, review);
+    let detail;
+    if (review !== undefined) {
+        const entries = feed.filter((entry) => entry.reviewId === review);
+        const skills = await host.curation.skills(user).list();
+        const archived = new Set(skills.filter((skill) => skill.archived).map((skill) => skill.name));
+        const undoneAt = entries.find((entry) => entry.action === "undo")?.at;
+        detail = {
+            id: review,
+            at: entries[0]?.at,
+            ...(undoneAt === undefined ? {} : { undoneAt }),
+            changes: entries
+                .filter((entry) => entry.action !== "undo")
+                .reverse()
+                .map((entry) => ({
+                id: entry.id,
+                skill: entry.skill,
+                action: entry.action,
+                actor: actorLabel(entry),
+                at: entry.at,
+                archived: archived.has(entry.skill),
+            })),
+            missed: reviewMissed,
+        };
+    }
     return {
         user,
         paused: settings.paused,
-        reviews: groupFeed(review === undefined
-            ? feed
-            : feed.filter((entry) => entry.reviewId === review)),
+        reviews: groupFeed(feed),
         reviewMissed,
+        ...(detail === undefined ? {} : { review: detail }),
     };
 }
 /** Whether `payload` (an action's JSON argument) is a plain object. */
@@ -223,64 +226,68 @@ export function createCuratorView(host) {
             };
         },
         actions: {
-            undoReview: async (ctx, payload) => {
+            openReview: async (ctx, payload) => {
                 const who = callerOf(ctx);
                 if ("reject" in who)
                     return who.reject;
                 const itemId = itemIdOf(payload);
                 if (itemId === undefined) {
-                    return { ok: false, error: { message: "undoReview expects {itemId}" } };
+                    return { ok: false, error: { message: "openReview expects {itemId}" } };
                 }
-                // A failing undo (the store's report, or a host error) is a
-                // named action error — never a thrown action the surface
-                // layer renders generically (main's 774c660 semantics,
-                // kept through the git-history rework).
+                const review = await resolveReviewId(host, who.user, itemId);
+                if (review === undefined)
+                    return { ok: true, toast: "Nothing to review" };
+                return {
+                    ok: true,
+                    navigate: { type: "navigate", params: { review } },
+                };
+            },
+            openChangeSkill: async (ctx, payload) => {
+                const who = callerOf(ctx);
+                if ("reject" in who)
+                    return who.reject;
+                const review = reviewParam(ctx);
+                if (review === undefined) {
+                    return { ok: false, error: { message: "openChangeSkill needs a review" } };
+                }
+                const itemId = itemIdOf(payload);
+                if (itemId === undefined) {
+                    return { ok: false, error: { message: "openChangeSkill expects {itemId}" } };
+                }
+                const { feed } = await feedFor(host, who.user, review);
+                const entry = feed.find((candidate) => candidate.id === itemId && candidate.reviewId === review);
+                if (entry === undefined)
+                    return { ok: true, toast: "Nothing to open" };
+                if (entry.action === "overlay") {
+                    return { ok: true, toast: "Overlays open from Skills." };
+                }
+                return {
+                    ok: true,
+                    navigate: {
+                        type: "navigate",
+                        target: {
+                            view: {
+                                extension: "core",
+                                id: "skills",
+                                params: { skill: entry.skill, root: "learned" },
+                            },
+                        },
+                    },
+                };
+            },
+            undoReview: async (ctx, _payload) => {
+                const who = callerOf(ctx);
+                if ("reject" in who)
+                    return who.reject;
+                const reviewId = reviewParam(ctx);
+                if (reviewId === undefined) {
+                    return { ok: false, error: { message: "undoReview needs a review" } };
+                }
+                // A failing undo is a named action error, never a thrown one.
                 const fail = (cause) => ({
                     ok: false,
                     error: { message: cause instanceof Error ? cause.message : String(cause) },
                 });
-                // On a deep-link the param already names the review — and
-                // the group's sha may sit past page 1 of the feed, where
-                // the single-page lookup below cannot see it. Dispatch the
-                // param's review id directly.
-                const anchored = reviewParam(ctx);
-                if (anchored !== undefined) {
-                    let reverted;
-                    try {
-                        reverted = await host.curation.undoReview(who.user, anchored);
-                    }
-                    catch (cause) {
-                        return fail(cause);
-                    }
-                    // The revert already succeeded — a failing notice clear only
-                    // leaves a stale notice, so it never turns the undo into a
-                    // failed action with no toast.
-                    await host.notices
-                        .clear({ user: who.user, key: reviewNoticeKey(anchored) })
-                        .catch(() => undefined);
-                    return {
-                        ok: true,
-                        toast: reverted > 0 ? `Undid ${reverted} change(s)` : "Nothing to undo",
-                    };
-                }
-                // The dispatch carries the GROUP key (`review-<sha>`, minted
-                // by groupFeed); core's undoReview matches entry.reviewId.
-                // Resolve the sha back to the review id through the feed — a
-                // verbatim dispatch would match nothing and silently revert 0.
-                // A bare review id (the pre-upgrade coordinate, and digest
-                // ids like "digest-<date>" that already carry the prefix) is
-                // the fallback when no entry's sha matches.
-                const sha = itemId.startsWith("review-")
-                    ? itemId.slice("review-".length)
-                    : itemId;
-                const feed = await host.curation.skills(who.user).feed(VIEW_FEED_LIMIT);
-                const reviewId = feed.find((entry) => entry.id === sha)?.reviewId ??
-                    (feed.some((entry) => entry.reviewId === itemId)
-                        ? itemId
-                        : undefined);
-                if (reviewId === undefined) {
-                    return { ok: true, toast: "Nothing to undo" };
-                }
                 let reverted;
                 try {
                     reverted = await host.curation.undoReview(who.user, reviewId);
@@ -288,11 +295,8 @@ export function createCuratorView(host) {
                 catch (cause) {
                     return fail(cause);
                 }
-                // Clear the notice this review posted, by key (a notice-less
-                // clear is a no-op). The revert already succeeded — a failing
-                // clear only leaves a stale notice (replaced by the next
-                // review's), so it must never turn the undo into a failed
-                // action with no toast.
+                // The revert succeeded: a notice-clear failure must not turn
+                // it into a failed action or suppress the undo toast.
                 await host.notices
                     .clear({ user: who.user, key: reviewNoticeKey(reviewId) })
                     .catch(() => undefined);
@@ -339,9 +343,111 @@ function emptyTree() {
         },
     };
 }
-/** The view tree: header actions (pause switch + the Skills
- *  link to the core view), then the feed grouped for undo. */
+/** The view tree: the feed, or the selected review's detail page. */
 function viewTree(data) {
+    const skillsAction = {
+        id: "open-skills",
+        label: "Skills",
+        icon: "book",
+        action: {
+            type: "navigate",
+            target: {
+                view: { extension: "core", id: "skills" },
+            },
+        },
+    };
+    if (data.review !== undefined) {
+        const review = data.review;
+        return {
+            v: 1,
+            root: {
+                type: "page",
+                id: "curator-root",
+                title: "Curator",
+                subtitle: review.at === undefined || review.missed
+                    ? "Review"
+                    : `Review ${review.at}`,
+                actions: [
+                    {
+                        id: "back-to-feed",
+                        label: "Back to feed",
+                        icon: "list",
+                        action: { type: "navigate", params: {} },
+                    },
+                    skillsAction,
+                ],
+                main: [
+                    review.undoneAt === undefined
+                        ? {
+                            type: "callout",
+                            id: "undo-callout",
+                            tone: "warn",
+                            title: "Undo review",
+                            body: "Undo also reverts this review's knowledge and memory changes.",
+                            actions: [
+                                {
+                                    id: "undo-review",
+                                    label: "Undo review",
+                                    action: {
+                                        type: "submit",
+                                        name: "undoReview",
+                                        confirm: {
+                                            title: "Undo this review?",
+                                            body: "Reverts every change this review made. Archived skills can be restored from Skills.",
+                                            tone: "warn",
+                                            confirmLabel: "Undo",
+                                        },
+                                    },
+                                },
+                            ],
+                        }
+                        : {
+                            type: "callout",
+                            id: "undo-callout",
+                            tone: "neutral",
+                            title: `Undone ${review.undoneAt}. Archived skills can be restored from Skills.`,
+                        },
+                    ...(review.missed
+                        ? [
+                            {
+                                type: "markdown",
+                                text: "This review is older than the recent changes.",
+                            },
+                        ]
+                        : []),
+                    {
+                        type: "section",
+                        id: "changes-section",
+                        title: "Changes",
+                        subtitle: "Newest changes from the feed. Undo reverts every change this review made.",
+                        children: [
+                            {
+                                type: "collection",
+                                id: "changes",
+                                display: "list",
+                                items: review.changes.map((change) => ({
+                                    ...change,
+                                    title: `${change.action} ${change.skill}`,
+                                    ...(change.archived
+                                        ? { badges: [{ text: "Archived", tone: "neutral" }] }
+                                        : {}),
+                                })),
+                                onActivate: { type: "edit", name: "openChangeSkill" },
+                                item: {
+                                    title: { $: "./title" },
+                                    subtitle: { $: "./actor" },
+                                    meta: [{ time: { $: "./at" }, format: "relative" }],
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+    }
+    return feedTree(data, skillsAction);
+}
+function feedTree(data, skillsAction) {
     return {
         v: 1,
         root: {
@@ -356,17 +462,7 @@ function viewTree(data) {
                     icon: data.paused ? "sun" : "moon",
                     action: { type: "submit", name: "setPaused" },
                 },
-                {
-                    id: "open-skills",
-                    label: "Skills",
-                    icon: "book",
-                    action: {
-                        type: "navigate",
-                        target: {
-                            view: { extension: "core", id: "skills" },
-                        },
-                    },
-                },
+                skillsAction,
             ],
             main: [
                 {
@@ -376,7 +472,7 @@ function viewTree(data) {
                     children: [
                         {
                             type: "markdown",
-                            text: "Click a review to undo every change it made. Outside sigrun marks catch-up commits made outside sigrun.",
+                            text: "Click a review to see what it changed. Outside sigrun marks catch-up commits made outside sigrun.",
                         },
                         data.reviews.length === 0
                             ? {
@@ -396,7 +492,7 @@ function viewTree(data) {
                                         .map((entry) => `${entry.action} ${entry.skill} (${entry.actor})`)
                                         .join(", "),
                                 })),
-                                onActivate: { type: "edit", name: "undoReview" },
+                                onActivate: { type: "edit", name: "openReview" },
                                 item: {
                                     title: { $: "./id" },
                                     subtitle: { $: "./summary" },

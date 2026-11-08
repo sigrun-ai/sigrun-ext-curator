@@ -17,8 +17,8 @@ over learned skills and curation targets.
 Per-user settings (via the user's scoped settings store) control it:
 `enabled` (default true), `paused` (default false), `idleModel`,
 `threshold` (default 10), `dailyRuns` (default 12). `/learn [focus]`
-requests a review on demand; the curator view lists skills, overlays and
-the change feed with per-review undo.
+requests a review on demand; the curator view lists the change feed and
+opens each review's changes.
 
 ## What you see
 
@@ -30,22 +30,20 @@ confirm — reverts every change that review made (the notice never
 lands in the transcript, so forks never replay it, and it is never
 pushed to a notifier or chat channel).
 
-The **Curator** view (per user; only your own data ever renders) lists
+The **Curator** view (per user; only your own data ever renders) is a
+**change feed**: the newest 50 changes, grouped by review. Clicking a
+review opens its page, which lists its changes and offers **Undo
+review** in a callout. Undo asks for confirmation before reverting
+every change the review made and clearing its notice. **Back to feed**
+returns to the feed; change rows open their skill in **Skills**, and
+archived skills can be restored from Skills.
 
-- **Learned skills** — name, description, last used, with a pin toggle
-  and archive/restore on each;
-- **Overlays** — your notes on upstream skills, flagged `orphaned`
-  when the upstream vanished;
-- **The change feed** — the newest 50 changes, grouped by review, each
-  group with an **Undo review** button that reverts every change that
-  review made (and clears its notice);
-- a **pause switch** — `Pause curation` stops both loops for you
-  without disabling anything else; the view and `/learn` keep working
-  while paused.
+The feed page also has a **pause switch** — `Pause curation` stops both
+loops for you without disabling anything else; the view and `/learn`
+keep working while paused.
 
-Undo is one click from the notice itself (the notice's **Undo** action
-runs the extension's declared notice-action handler); the view's
-per-review **Undo review** does the same from the feed.
+Undo is also available directly from the notice (its **Undo** action
+runs the extension's declared notice-action handler after a confirm).
 
 ## `/learn [focus]`
 
