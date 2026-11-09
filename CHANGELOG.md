@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings are declared as a JSON Schema (user schema) via
+  `host.settings.declare` and rendered as generated forms on the extension's
+  settings page; the hand-written settings parser is gone. Raises the
+  `@sigrun/sigrun` peer floor to the settings-rework core.
 - peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
 
 ## [0.3.2] - 2026-11-06
