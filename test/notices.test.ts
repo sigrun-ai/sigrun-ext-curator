@@ -350,6 +350,7 @@ describe("the loops fire notify on a changed review", () => {
 				targets: async () => [],
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: false,
 					unattributed: 0,
@@ -479,6 +480,7 @@ describe("the loops fire notify on a changed review", () => {
 				targets: async () => [],
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: false,
 					unattributed: 0,

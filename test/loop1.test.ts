@@ -197,6 +197,7 @@ describe("loop 1: the fork-review decision", () => {
 			host.setCuration({
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: true,
 					unattributed: 0,
@@ -312,6 +313,7 @@ describe("loop 1: the fork-review decision", () => {
 			host.setCuration({
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: false,
 					unattributed: 2,
@@ -441,6 +443,7 @@ describe("loop 1: the fork-review decision", () => {
 			host.setCuration({
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: false,
 					unattributed: 3,
@@ -541,6 +544,7 @@ describe("loop 1: the fork-review decision", () => {
 			host.setCuration({
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: true,
 					ownerOnly: true,
 					unattributed: 0,
@@ -758,6 +762,7 @@ describe("loop 1: the fork-review decision", () => {
 			host.setCuration({
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: true,
 					unattributed: 0,

@@ -876,6 +876,7 @@ describe("reviewDigest (the digests step)", () => {
 			targets: async () => [],
 			eligibility: async () => ({
 				owner: ALICE,
+				deleted: false,
 				internal: false,
 				ownerOnly: false,
 				unattributed: 0,
@@ -1012,6 +1013,7 @@ describe("reviewDigest (the digests step)", () => {
 				targets: async () => [],
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: true,
 					unattributed: 0,
@@ -1527,6 +1529,7 @@ describe("reviewDigest read tools (knowledge follow-up)", () => {
 				],
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: false,
 					unattributed: 0,

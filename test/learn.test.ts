@@ -88,6 +88,7 @@ describe("/learn", () => {
 				takeHints: async () => [],
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: true,
 					unattributed: 0,
@@ -122,6 +123,7 @@ describe("/learn", () => {
 			host.setCuration({
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: false,
 					unattributed: 2,
@@ -154,6 +156,7 @@ describe("/learn", () => {
 				takeHints: async () => [],
 				eligibility: async () => ({
 					owner: ALICE,
+					deleted: false,
 					internal: false,
 					ownerOnly: true,
 					unattributed: 0,

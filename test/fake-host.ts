@@ -323,6 +323,7 @@ export async function createFakeHost(
 			record("curation.eligibility", id);
 			return {
 				owner: conversationOwners.get(id),
+				deleted: false,
 				internal: false,
 				ownerOnly: true,
 				unattributed: 0,
