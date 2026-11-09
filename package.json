@@ -33,8 +33,8 @@
 		"@earendil-works/chord": "1.5.0",
 		"@earendil-works/pi-ai": "1.5.0",
 		"@earendil-works/pi-durable": "1.5.0",
-		"@sigrun/sigrun": "file:../sigrun",
 		"@sigrun/shared": "file:../sigrun/shared",
+		"@sigrun/sigrun": "file:../sigrun",
 		"@types/node": "^26.6.4",
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
@@ -52,5 +52,8 @@
 	"publishConfig": {
 		"access": "public",
 		"provenance": true
+	},
+	"dependencies": {
+		"typebox": "1.3.27"
 	}
 }

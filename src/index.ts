@@ -46,6 +46,7 @@ import { createLoop2 } from "./loop2.js";
 import { createLearnCommand } from "./learn.js";
 import { createCuratorView } from "./view.js";
 import { Backoff } from "./backoff.js";
+import { declareSettings } from "./settings.js";
 import { ReviewQueue } from "./queue.js";
 import { overlayQuestionHandler } from "./steps/overlays.js";
 
@@ -112,6 +113,9 @@ export type { CuratorViewData } from "./view.js";
 export default function createCurator(
 	host: SigrunHost,
 ): SigrunExtensionResult {
+	// The settings declaration comes FIRST (settings rework): the loops
+	// and the view read through the declared handle, never the raw store.
+	declareSettings(host);
 	const loop1 = createLoop1({
 		host,
 		queue: new ReviewQueue(),
@@ -186,11 +190,8 @@ function undoReviewNoticeAction(host: SigrunHost): UserNoticeActionHandler {
 	};
 }
 
-export {
-	parseCuratorSettings,
-	readSettings,
-	DEFAULT_CURATOR_SETTINGS,
-} from "./settings.js";
+export { declareSettings, readSettings } from "./settings.js";
+export { CURATOR_USER_SCHEMA } from "./settings-schema.js";
 export { notify, reviewNoticeKey } from "./notices.js";
 export type { CuratorSettings } from "./settings.js";
 export {

@@ -35,7 +35,7 @@ import type {
 import { accessOf } from "@sigrun/shared/access";
 import type { Access } from "@sigrun/shared/access";
 import { reviewNoticeKey } from "./notices.js";
-import { parseCuratorSettings } from "./settings.js";
+import { readSettings } from "./settings.js";
 
 /** How many feed entries the view lists (the brief: newest 50). */
 export const VIEW_FEED_LIMIT = 50;
@@ -216,7 +216,7 @@ async function readData(
 	user: string,
 	review: string | undefined,
 ): Promise<CuratorViewData> {
-	const settings = parseCuratorSettings(await host.stores.user(user).settings.get());
+	const settings = await readSettings(host, user);
 	const { feed, reviewMissed } = await feedFor(host, user, review);
 	let detail: ReviewDetail | undefined;
 	if (review !== undefined) {
@@ -415,7 +415,7 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 						: undefined) ??
 					(isObject(payload) ? payload.paused : undefined);
 				const raw = await host.stores.user(who.user).settings.get();
-				const current = parseCuratorSettings(raw).paused;
+				const current = (await readSettings(host, who.user)).paused;
 				const paused =
 					typeof explicit === "boolean" ? explicit : !current;
 				if (paused === current) {

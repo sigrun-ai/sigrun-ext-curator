@@ -39,6 +39,7 @@ import { createLoop2 } from "./loop2.js";
 import { createLearnCommand } from "./learn.js";
 import { createCuratorView } from "./view.js";
 import { Backoff } from "./backoff.js";
+import { declareSettings } from "./settings.js";
 import { ReviewQueue } from "./queue.js";
 import { overlayQuestionHandler } from "./steps/overlays.js";
 /** The durable task kind the tick job fires (TaskRecord.kind). */
@@ -90,6 +91,9 @@ export { createCuratorView, viewAccess, groupFeed, VIEW_FEED_LIMIT } from "./vie
  * the handlers use — no timers, no I/O run here.
  */
 export default function createCurator(host) {
+    // The settings declaration comes FIRST (settings rework): the loops
+    // and the view read through the declared handle, never the raw store.
+    declareSettings(host);
     const loop1 = createLoop1({
         host,
         queue: new ReviewQueue(),
@@ -162,7 +166,8 @@ function undoReviewNoticeAction(host) {
         }
     };
 }
-export { parseCuratorSettings, readSettings, DEFAULT_CURATOR_SETTINGS, } from "./settings.js";
+export { declareSettings, readSettings } from "./settings.js";
+export { CURATOR_USER_SCHEMA } from "./settings-schema.js";
 export { notify, reviewNoticeKey } from "./notices.js";
 export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
 export { enqueueLearn, learnReviewId } from "./learn.js";

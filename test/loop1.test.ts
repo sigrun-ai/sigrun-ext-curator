@@ -685,16 +685,27 @@ describe("loop 1: the fork-review decision", () => {
 		try {
 			// Two settles enqueue two reviews back-to-back (the queue is
 			// FIFO per user; both decisions ran before either review). Each
-			// settle carries its own fresh hint.
+			// settle carries its own fresh hint. R1's provider call is
+			// deferred so both decisions run before R1's failure lands its
+			// refund — the ordering this test pins (the settings checked
+			// read is async now, so an immediate R1 would otherwise settle
+			// before the second decision and its backoff would block it).
 			const batches = [[hint(1)], [hint(2)]];
-			let results = [FAILED, COMPLETED];
+			let releaseR1: (result: CurationRunResult) => void = () => {};
+			const r1 = new Promise<CurationRunResult>((resolve) => {
+				releaseR1 = resolve;
+			});
 			host.setCuration({
 				takeHints: async () => batches.shift() ?? [],
-				forkReview: async () => results.shift() ?? COMPLETED,
+				forkReview: async () => {
+					if (batches.length === 1) return r1; // the first call
+					return COMPLETED;
+				},
 			});
 
 			await fire(loop, host, answered(id));
 			await fire(loop, host, answered(id));
+			releaseR1(FAILED);
 			await queue.idle();
 
 			// R1 failed and refunded hint-1; R2 completed with hint-2 — its

@@ -68,74 +68,9 @@ describe("createCurator (the loader contract)", () => {
 	});
 });
 
-describe("readSettings (per user, with defaults)", () => {
-	test("an absent settings object reads as the defaults", async () => {
-		const host = await createFakeHost({ users: [{ user: ALICE }] });
-		try {
-			await expect(readSettings(host, ALICE)).resolves.toEqual({
-				enabled: true,
-				paused: false,
-				idleModel: undefined,
-				threshold: 10,
-				dailyRuns: 12,
-			});
-			// Read through the per-user scoped store.
-			expect(
-				host.calls.some(
-					(call) =>
-						call.method === "stores.user.settings.get" &&
-						call.args[0] === ALICE,
-				),
-			).toBe(true);
-		} finally {
-			await host.close();
-		}
-	});
-
-	test("stored values override the defaults; unknown keys are ignored", async () => {
-		const host = await createFakeHost({ users: [{ user: ALICE }] });
-		try {
-			await host.stores.user(ALICE).settings.set({
-				enabled: false,
-				paused: true,
-				idleModel: "faux/m",
-				threshold: 4,
-				dailyRuns: 2,
-				unrelated: "kept-but-ignored",
-			});
-			await expect(readSettings(host, ALICE)).resolves.toEqual({
-				enabled: false,
-				paused: true,
-				idleModel: "faux/m",
-				threshold: 4,
-				dailyRuns: 2,
-			});
-		} finally {
-			await host.close();
-		}
-	});
-
-	test("malformed values fall back to their defaults, never throw", async () => {
-		const host = await createFakeHost({ users: [{ user: ALICE }] });
-		try {
-			await host.stores.user(ALICE).settings.set({
-				enabled: "yes",
-				threshold: -3,
-				dailyRuns: "many",
-				paused: 0,
-			});
-			await expect(readSettings(host, ALICE)).resolves.toEqual({
-				enabled: true,
-				paused: false,
-				idleModel: undefined,
-				threshold: 10,
-				dailyRuns: 12,
-			});
-		} finally {
-			await host.close();
-		}
-	});
-});
+// The per-user settings reads (defaults, stored overrides, malformed
+// repairs) moved to test/settings-schema.test.ts with the schema
+// declaration (settings rework, Task 10).
 
 describe("the noticeActions.undoReview handler (the notice's Undo)", () => {
 	const BOB = "bob";
