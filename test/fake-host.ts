@@ -38,6 +38,8 @@ import type {
 	SubmissionRecordWire,
 	UserWire as DirectoryUserWire,
 } from "@sigrun/shared/views";
+import type { DeclaredSettings, SettingsDeclaration } from "@sigrun/sigrun/extension";
+import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
 import type {
 	AccountLinkWire,
 	CurationFeedEntry,
@@ -94,6 +96,9 @@ export type ScriptableCuration = SigrunCurationHost & {
 
 /** The fake host surface: the `SigrunHost` plus the test controls. */
 export interface FakeHost extends SigrunHost {
+	/** The declaration the factory made through `settings.declare`, with
+	 *  checked reads backed by core's own stored-settings check. */
+	readonly declaredSettings: DeclaredSettings<Record<string, unknown>, Record<string, unknown>> | undefined;
 	/** Every host-member call, in order. */
 	readonly calls: readonly FakeCall[];
 	/** The shared invocation context handlers receive (never aborts). */
@@ -398,7 +403,36 @@ export async function createFakeHost(
 		{ defaults: curationDefaults },
 	);
 
+	let declaredSettings: FakeHost["declaredSettings"];
+
 	const host: SigrunHost = {
+		settings: {
+			declare: <S, U>(decl: SettingsDeclaration) => {
+				record("settings.declare");
+				const read = async (
+					schema: SettingsDeclaration["schema"],
+					stored: Record<string, unknown>,
+				): Promise<Record<string, unknown>> =>
+					checkStoredSettings(schema, stored).value;
+				const handle = {
+					get: async () =>
+						(await read(decl.schema, { ...settingsValue })) as S,
+					user: (user: string) => ({
+						get: async () => {
+							if (decl.userSchema === undefined) {
+								throw new Error("settings.userSchema is not declared");
+							}
+							return (await read(
+								decl.userSchema,
+								{ ...(settingsByUser.get(user) ?? {}) },
+							)) as U;
+						},
+					}),
+				};
+				declaredSettings = handle as unknown as FakeHost["declaredSettings"];
+				return handle;
+			},
+		},
 		stores: {
 			user: (user: string) => ({
 				secrets: {
@@ -442,6 +476,10 @@ export async function createFakeHost(
 				set: async (key: string, value: string) => {
 					record("stores.secrets.set", key, value);
 					secretsValue[key] = value;
+				},
+				delete: async (key: string) => {
+					record("stores.secrets.delete", key);
+					delete secretsValue[key];
 				},
 			},
 			settings: {
@@ -825,6 +863,9 @@ export async function createFakeHost(
 
 	const fake: FakeHost = {
 		...host,
+		get declaredSettings() {
+			return declaredSettings;
+		},
 		calls,
 		context: HANDLER_CONTEXT,
 		setLastActivity: (id, iso) => {

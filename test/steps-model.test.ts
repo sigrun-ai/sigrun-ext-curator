@@ -41,6 +41,7 @@ import type {
 } from "@sigrun/sigrun/extension";
 import type { ConversationViewWire, ViewEntry } from "@sigrun/shared/views";
 import { createFakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import type { FakeHost, ScriptableCuration } from "./fake-host.js";
 import { queueDigest, refundHints } from "../src/queue.js";
 import {
@@ -190,6 +191,7 @@ describe("overlay re-check", () => {
 	/** Three drifted overlays, one of each verdict shape. */
 	async function setupThree() {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		const puts: (readonly [string, string, string])[] = [];
 		const removes: string[] = [];
 		const rows = new Map<string, CurationOverlay>([
@@ -273,6 +275,7 @@ describe("overlay unsure", () => {
 	/** One drifted overlay the run cannot decide on. */
 	async function setupUnsure() {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		const recent = await host.conversations.create({ owner: ALICE });
 		const older = await host.conversations.create({ owner: ALICE });
 		host.setLastActivity(recent, new Date(NOW.getTime() - 60_000).toISOString());
@@ -514,6 +517,7 @@ describe("overlay questions (v2)", () => {
 
 	test("an unsure verdict asks in a new conversation owned by the user", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			// Pre-existing owned conversations the question must NOT land in.
 			const existing = await host.conversations.create({ owner: ALICE });
@@ -544,6 +548,7 @@ describe("overlay questions (v2)", () => {
 
 	test("unsure verdicts in one recheck share one new conversation", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await setupUnsureSkills(host, ["acme-one", "acme-two"]);
 
@@ -583,6 +588,7 @@ describe("overlay questions (v2)", () => {
 
 	test("re-asking a skill cancels the open question", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await writeQuestions(host, {
 				v: 2,
@@ -611,6 +617,8 @@ describe("overlay questions (v2)", () => {
 	test("re-ask still asks when the old conversation is gone", async () => {
 		for (const behavior of ["false", { reject: new Error("gone") }] as const) {
 			const host = await createFakeHost({ users: [{ user: ALICE }] });
+			declareSettings(host);
+		declareSettings(host);
 			try {
 				host.setSettleBehavior(behavior);
 				await writeQuestions(host, {
@@ -640,6 +648,8 @@ describe("overlay questions (v2)", () => {
 	test("a skipped, cancelled or expired question leaves the file and the overlay unchanged", async () => {
 		for (const status of ["skipped", "cancelled", "expired"] as const) {
 			const host = await createFakeHost({ users: [{ user: ALICE }] });
+			declareSettings(host);
+		declareSettings(host);
 			try {
 				const convId = await host.conversations.create({ owner: ALICE });
 				const callId = `acme-q-${status}`;
@@ -693,6 +703,8 @@ describe("overlay questions (v2)", () => {
 	test("answered keep re-anchors and drop removes; the entry leaves the file", async () => {
 		for (const verdict of ["keep", "drop"] as const) {
 			const host = await createFakeHost({ users: [{ user: ALICE }] });
+			declareSettings(host);
+		declareSettings(host);
 			try {
 				const convId = await host.conversations.create({ owner: ALICE });
 				const callId = `acme-answered-${verdict}`;
@@ -752,6 +764,7 @@ describe("overlay questions (v2)", () => {
 
 	test("a legacy array file is migrated without losing questions", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			// A v1 file: THREE entries, two for one skill.
 			await writeQuestions(host, [
@@ -780,6 +793,7 @@ describe("overlay questions (v2)", () => {
 
 	test("a legacy question is still applied when answered", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await writeQuestions(host, [question("acme-legacy", "legacy-keep")]);
 			const puts: string[] = [];
@@ -822,6 +836,7 @@ describe("overlay questions (v2)", () => {
 
 	test("re-asking a skill that has only a legacy entry still asks", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await writeQuestions(host, [question("acme-reask", "legacy-reask")]);
 			await setupUnsureSkills(host, ["acme-reask"]);
@@ -846,6 +861,7 @@ describe("overlay questions (v2)", () => {
 
 	test("a failed notice does not lose the question", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			host.setNotifyBehavior({ reject: new Error("notifier down") });
 			await setupUnsureSkills(host, ["acme-notify"]);
@@ -918,6 +934,7 @@ describe("reviewDigest (the digests step)", () => {
 
 	test("the digest input carries the owner's turns and replies, never bob's", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
+		declareSettings(host);
 		try {
 			const id = await host.conversations.create({ owner: ALICE });
 			const inputs: string[] = [];
@@ -964,6 +981,7 @@ describe("reviewDigest (the digests step)", () => {
 
 	test("a hint stranded in both the queue entry and the refund file is consumed once", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
+		declareSettings(host);
 		try {
 			const id = await host.conversations.create({ owner: ALICE });
 			const inputs: string[] = [];
@@ -1006,6 +1024,7 @@ describe("reviewDigest (the digests step)", () => {
 
 	test("an owner-only conversation without the authors doc digests every turn", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
+		declareSettings(host);
 		try {
 			const id = await host.conversations.create({ owner: ALICE });
 			const inputs: string[] = [];
@@ -1046,6 +1065,7 @@ describe("reviewDigest (the digests step)", () => {
 describe("dietOne (the diet step)", () => {
 	test("a compare run reporting loss undoes the rewrite via skills.undo", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			let fedRewrite = false;
 			const undone: (readonly string[])[] = [];
@@ -1096,6 +1116,7 @@ describe("dietOne (the diet step)", () => {
 
 	test("a compare run reporting no loss keeps the rewrite; small or fresh skills are untouched", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			let fedRewrite = false;
 			const undone: (readonly string[])[] = [];
@@ -1178,6 +1199,7 @@ describe("mergeOne (the merge step)", () => {
 
 	test("a same-class pair merges: the step archives the other skill with absorbed_into", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const rows = [skill("acme-deploy"), skill("acme-deploys")];
 			const applied = scriptMerge(host, rows, () =>
@@ -1212,6 +1234,7 @@ describe("mergeOne (the merge step)", () => {
 
 	test("a verdict naming unknown skills changes nothing", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const rows = [skill("acme-deploy"), skill("acme-deploys")];
 			const applied = scriptMerge(host, rows, () =>
@@ -1269,6 +1292,7 @@ describe("maintainTargets and the daily cap", () => {
 
 	test("targets get the tick deadline and the remaining runs; the pass completes", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await pastGrace(host);
 			// No conversations at all: quiet. steps[6] = "targets".
@@ -1319,6 +1343,7 @@ describe("maintainTargets and the daily cap", () => {
 
 	test("the daily cap stops the pass for the day (cursor does not advance)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await pastGrace(host);
 			// steps[2] = "overlay-recheck" (the first model step).
@@ -1351,6 +1376,7 @@ describe("maintainTargets and the daily cap", () => {
 
 	test("maintainTargets hands each capable target the deadline and remaining runs", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const budgets: (readonly [string, object])[] = [];
 			host.setCuration({
@@ -1398,6 +1424,7 @@ describe("maintainTargets and the daily cap", () => {
 describe("an unparseable verdict", () => {
 	test("an unparseable overlay verdict applies nothing (the run still spends budget)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const puts: string[] = [];
 			const removes: string[] = [];
@@ -1439,6 +1466,7 @@ describe("an unparseable verdict", () => {
 
 	test("an unparseable merge verdict with changes reverts them via undoReview", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const undone: (readonly [string, string])[] = [];
 			let reviewId = "";
@@ -1473,6 +1501,7 @@ describe("an unparseable verdict", () => {
 
 	test("an unparseable diet compare undoes the rewrite (no unverified diet stands)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			let fedRewrite = false;
 			const undone: (readonly string[])[] = [];
@@ -1514,6 +1543,7 @@ describe("an unparseable verdict", () => {
 describe("reviewDigest read tools (knowledge follow-up)", () => {
 	test("the digest allow list carries served targets' readTools", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = await host.conversations.create({ owner: ALICE });
 			const allows: (readonly string[])[] = [];

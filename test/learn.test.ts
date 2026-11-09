@@ -19,6 +19,7 @@ import type {
 	Principal,
 } from "@sigrun/sigrun/extension";
 import { createFakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import { Backoff } from "../src/backoff.js";
 import { createLoop1, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_MAX_TOOL_CALLS } from "../src/loop1.js";
 import { ReviewQueue } from "../src/queue.js";
@@ -50,6 +51,7 @@ const REVIEWED: CurationRunResult = {
 /** The learn harness: fake host, one owned conversation, real loop 1. */
 async function setup() {
 	const host = await createFakeHost({ users: [{ user: ALICE }] });
+	declareSettings(host);
 	const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 	const queue = new ReviewQueue();
 	const loop1 = createLoop1({ host, queue, backoff: new Backoff() });

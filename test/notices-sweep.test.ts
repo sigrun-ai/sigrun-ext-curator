@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { createFakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import type { FakeHost } from "./fake-host.js";
 import {
 	tick,
@@ -75,6 +76,7 @@ function ambientClears(
 describe("the one-time ambient-notice migration sweep", () => {
 	test("the sweep clears old ambient notices once (marker)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const first = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			const second = (await host.conversations.create({ owner: ALICE })) as ConversationId;
@@ -100,6 +102,7 @@ describe("the one-time ambient-notice migration sweep", () => {
 
 	test("the sweep is harmless when absent (no conversations → marker only)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await pastGrace(host);
 			await tick(host, fixedClock());
@@ -115,6 +118,7 @@ describe("the one-time ambient-notice migration sweep", () => {
 
 	test("a clearAmbient failure is logged and the marker is not written (the next tick retries)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			await host.conversations.create({ owner: ALICE });
 			await pastGrace(host);
@@ -145,6 +149,7 @@ describe("the one-time ambient-notice migration sweep", () => {
 
 	test("the sweep is per-user (bob's conversations are alice's never)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
+		declareSettings(host);
 		try {
 			const alices = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			const bobs = (await host.conversations.create({ owner: BOB })) as ConversationId;

@@ -32,6 +32,7 @@ import type {
 	RunSettledEvent,
 } from "@sigrun/sigrun/extension";
 import { createFakeHost, type FakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import { Backoff } from "../src/backoff.js";
 import { createLoop1 } from "../src/loop1.js";
 import { ReviewQueue } from "../src/queue.js";
@@ -130,6 +131,7 @@ function hint(n: number): CurationHint {
 /** The loop-1 harness: fake host, one owned conversation, real queue/backoff. */
 async function setup(opts: { now?: () => Date } = {}) {
 	const host = await createFakeHost({ users: [{ user: ALICE }] });
+	declareSettings(host);
 	const id = await host.conversations.create({ owner: ALICE });
 	const queue = new ReviewQueue();
 	const backoff = new Backoff();
@@ -689,16 +691,27 @@ describe("loop 1: the fork-review decision", () => {
 		try {
 			// Two settles enqueue two reviews back-to-back (the queue is
 			// FIFO per user; both decisions ran before either review). Each
-			// settle carries its own fresh hint.
+			// settle carries its own fresh hint. R1's provider call is
+			// deferred so both decisions run before R1's failure lands its
+			// refund — the ordering this test pins (the settings checked
+			// read is async now, so an immediate R1 would otherwise settle
+			// before the second decision and its backoff would block it).
 			const batches = [[hint(1)], [hint(2)]];
-			let results = [FAILED, COMPLETED];
+			let releaseR1: (result: CurationRunResult) => void = () => {};
+			const r1 = new Promise<CurationRunResult>((resolve) => {
+				releaseR1 = resolve;
+			});
 			host.setCuration({
 				takeHints: async () => batches.shift() ?? [],
-				forkReview: async () => results.shift() ?? COMPLETED,
+				forkReview: async () => {
+					if (batches.length === 1) return r1; // the first call
+					return COMPLETED;
+				},
 			});
 
 			await fire(loop, host, answered(id));
 			await fire(loop, host, answered(id));
+			releaseR1(FAILED);
 			await queue.idle();
 
 			// R1 failed and refunded hint-1; R2 completed with hint-2 — its

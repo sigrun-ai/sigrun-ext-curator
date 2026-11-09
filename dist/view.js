@@ -24,7 +24,7 @@
  */
 import { accessOf } from "@sigrun/shared/access";
 import { reviewNoticeKey } from "./notices.js";
-import { parseCuratorSettings } from "./settings.js";
+import { readSettings } from "./settings.js";
 /** How many feed entries the view lists (the brief: newest 50). */
 export const VIEW_FEED_LIMIT = 50;
 /** How many pages a `review` deep-link walks before giving up (the
@@ -131,7 +131,7 @@ export async function resolveReviewId(host, user, groupId) {
 }
 /** Build the view's data document for one user (the render's model). */
 async function readData(host, user, review) {
-    const settings = parseCuratorSettings(await host.stores.user(user).settings.get());
+    const settings = await readSettings(host, user);
     const { feed, reviewMissed } = await feedFor(host, user, review);
     let detail;
     if (review !== undefined) {
@@ -315,8 +315,11 @@ export function createCuratorView(host) {
                     ? payload.values.paused
                     : undefined) ??
                     (isObject(payload) ? payload.paused : undefined);
+                // The pause action still uses the raw store for its read-modify-
+                // write: the declared checked read strips unknown keys, while
+                // this write must preserve every other user setting verbatim.
                 const raw = await host.stores.user(who.user).settings.get();
-                const current = parseCuratorSettings(raw).paused;
+                const current = (await readSettings(host, who.user)).paused;
                 const paused = typeof explicit === "boolean" ? explicit : !current;
                 if (paused === current) {
                     return { ok: true, toast: paused ? "Curation paused" : "Curation resumed" };
