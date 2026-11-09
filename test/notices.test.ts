@@ -38,6 +38,7 @@ import type {
 	UserNoticeInput,
 } from "@sigrun/sigrun/extension";
 import { createFakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import type { FakeHost } from "./fake-host.js";
 import { notify } from "../src/notices.js";
 import { Backoff } from "../src/backoff.js";
@@ -97,6 +98,7 @@ function postedNotices(
 describe("notify (the post-review core notice)", () => {
 	test("a review posts one keyed notice with Undo + Review", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await notify(host, id, ALICE, {
@@ -151,6 +153,7 @@ describe("notify (the post-review core notice)", () => {
 
 	test("a second review in the same conversation posts its own notice", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await notify(host, id, ALICE, {
@@ -182,6 +185,7 @@ describe("notify (the post-review core notice)", () => {
 
 	test("a review whose joined title would exceed 200 chars posts a truncated title ending in …", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			// Six changes whose joined "Learned: …" lines exceed core's
@@ -215,6 +219,7 @@ describe("notify (the post-review core notice)", () => {
 
 	test("the notice is never written to the transcript and never sent to a notifier", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await notify(host, id, ALICE, {
@@ -243,6 +248,7 @@ describe("notify (the post-review core notice)", () => {
 
 	test("a review with no changes or no review id posts nothing", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await notify(host, id, ALICE, {
@@ -296,6 +302,7 @@ function answerMessage(): AssistantMessage {
 describe("the loops fire notify on a changed review", () => {
 	test("loop 1's completed review with changes posts the notice; without changes it does not", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			const queue = new ReviewQueue();
@@ -343,6 +350,7 @@ describe("the loops fire notify on a changed review", () => {
 
 	test("loop 2's digest review with changes posts the notice aimed at the mixed conversation", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await queueDigest(host, ALICE, id);
@@ -400,6 +408,7 @@ describe("the loops fire notify on a changed review", () => {
 
 	test("a notice failure never corrupts loop 1's completed review: no refund, no backoff, no error log", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			const queue = new ReviewQueue();
@@ -472,6 +481,7 @@ describe("the loops fire notify on a changed review", () => {
 
 	test("a notice failure never fails loop 2's digest step (the entry is still consumed)", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
 		try {
 			const id = (await host.conversations.create({ owner: ALICE })) as ConversationId;
 			await queueDigest(host, ALICE, id);

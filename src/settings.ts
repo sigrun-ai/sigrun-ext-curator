@@ -42,6 +42,9 @@ export async function readSettings(
 	host: SigrunHost,
 	user: string,
 ): Promise<CuratorSettings> {
-	const declared = declaredByHost.get(host) ?? declareSettings(host);
+	const declared = declaredByHost.get(host);
+	if (declared === undefined) {
+		throw new Error("readSettings before the factory declared settings");
+	}
 	return (await declared.user(user).get()) as CuratorSettings;
 }

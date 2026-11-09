@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { createFakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import type { FakeHost } from "./fake-host.js";
 import {
 	eligibleUsers,
@@ -62,7 +63,9 @@ function clock(atMs: number): {
 async function setup(
 	users: readonly string[] = [ALICE, BOB],
 ): Promise<FakeHost> {
-	return createFakeHost({ users: users.map((user) => ({ user })) });
+	const host = await createFakeHost({ users: users.map((user) => ({ user })) });
+	declareSettings(host);
+	return host;
 }
 
 /** One owned conversation with the given newest activity. */

@@ -28,6 +28,9 @@ export function declareSettings(host) {
 }
 /** Read one user's settings LIVE through the factory's declared handle. */
 export async function readSettings(host, user) {
-    const declared = declaredByHost.get(host) ?? declareSettings(host);
+    const declared = declaredByHost.get(host);
+    if (declared === undefined) {
+        throw new Error("readSettings before the factory declared settings");
+    }
     return (await declared.user(user).get());
 }

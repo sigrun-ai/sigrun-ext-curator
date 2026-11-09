@@ -39,8 +39,7 @@ import type {
 	UserWire as DirectoryUserWire,
 } from "@sigrun/shared/views";
 import type { DeclaredSettings, SettingsDeclaration } from "@sigrun/sigrun/extension";
-// @ts-expect-error — core internal, resolved through the file: dev link.
-import { checkStoredSettings } from "../node_modules/@sigrun/sigrun/dist/settings/schema/defaults.js";
+import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
 import type {
 	AccountLinkWire,
 	CurationFeedEntry,

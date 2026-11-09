@@ -10,6 +10,7 @@ import { assertDrawable } from "@sigrun/sigrun/settings-schema";
 import { CURATOR_USER_SCHEMA } from "../src/settings-schema.js";
 import { createFakeHost } from "./fake-host.js";
 import createCurator from "../src/index.js";
+import { readSettings } from "../src/settings.js";
 
 const ALICE = "alice";
 
@@ -74,6 +75,17 @@ describe("curator user settings schema", () => {
 				dailyRuns: 12,
 			});
 			expect(repaired.idleModel).toBeUndefined();
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("a read before the factory declared names the lifecycle error", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		try {
+			await expect(readSettings(host, ALICE)).rejects.toThrow(
+				"readSettings before the factory declared settings",
+			);
 		} finally {
 			await host.close();
 		}

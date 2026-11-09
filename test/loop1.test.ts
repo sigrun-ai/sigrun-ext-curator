@@ -32,6 +32,7 @@ import type {
 	RunSettledEvent,
 } from "@sigrun/sigrun/extension";
 import { createFakeHost, type FakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import { Backoff } from "../src/backoff.js";
 import { createLoop1 } from "../src/loop1.js";
 import { ReviewQueue } from "../src/queue.js";
@@ -130,6 +131,7 @@ function hint(n: number): CurationHint {
 /** The loop-1 harness: fake host, one owned conversation, real queue/backoff. */
 async function setup(opts: { now?: () => Date } = {}) {
 	const host = await createFakeHost({ users: [{ user: ALICE }] });
+	declareSettings(host);
 	const id = await host.conversations.create({ owner: ALICE });
 	const queue = new ReviewQueue();
 	const backoff = new Backoff();

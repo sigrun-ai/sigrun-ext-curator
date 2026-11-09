@@ -34,6 +34,7 @@ import type {
 } from "@sigrun/sigrun/extension";
 import { validateTree } from "@sigrun/sigrun/blocks";
 import { createFakeHost } from "./fake-host.js";
+import { declareSettings } from "../src/settings.js";
 import type { FakeHost } from "./fake-host.js";
 import { createCuratorView } from "../src/view.js";
 import { notify } from "../src/notices.js";
@@ -174,6 +175,7 @@ describe("the curator view", () => {
 	test("the rail icon is the pencil, distinct from core Skills' book", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
+			declareSettings(host);
 			const view = createCuratorView(host);
 			// Core's Skills view owns "book"; two rail entries with one glyph
 			// read as the same destination.
@@ -187,6 +189,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE));
 			const feed = blocksOfType(rendered.tree, "collection").find(
@@ -203,6 +206,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["openReview"]?.(
 				ctxOf(ALICE),
@@ -224,6 +228,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, []);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE));
 			expect(rendered.access).toBe("write");
@@ -254,6 +259,7 @@ describe("the curator view", () => {
 				feedEntry("aa0001", { reviewId: "review-a" }),
 				feedEntry("aa0002", { actor: "outside", skill: "deploy-staging" }),
 			]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE));
 			// The ROW carries the outside label (the git trailer's actor
@@ -282,6 +288,7 @@ describe("the curator view", () => {
 				feedEntry("aa0002", { reviewId: "review-b", skill: "two" }),
 				feedEntry("aa0003", { reviewId: "review-a", skill: "three" }),
 			]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE));
 			// Three groups, one per same-review RUN — the two review-a
@@ -303,6 +310,7 @@ describe("the curator view", () => {
 				feedEntry("aa0001", { reviewId: "review-a", skill: "deploy-staging" }),
 				feedEntry("aa0002", { reviewId: "review-b", skill: "release-flow" }),
 			]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 
 			// Unfiltered: both reviews render.
@@ -353,6 +361,7 @@ describe("the curator view", () => {
 					}),
 				}),
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE, { review: "review-old" }));
 			const text = JSON.stringify(rendered.tree);
@@ -391,6 +400,7 @@ describe("the curator view", () => {
 					}),
 				}),
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE, { review: "review-ancient" }));
 			const text = JSON.stringify(rendered.tree);
@@ -432,6 +442,7 @@ describe("the curator view", () => {
 					}),
 				}),
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE, { review: "review-ancient" }));
 			const text = JSON.stringify(rendered.tree);
@@ -471,6 +482,7 @@ describe("the curator view", () => {
 					}),
 				}),
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(view, ctxOf(ALICE));
 			const text = JSON.stringify(rendered.tree);
@@ -496,6 +508,7 @@ describe("the curator view", () => {
 				bob: [feedEntry("bb0001", { skill: "bob-notes" })],
 			},
 		);
+			declareSettings(host);
 			const view = createCuratorView(host);
 
 			const rendered = await renderView(view, ctxOf(ALICE));
@@ -535,6 +548,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(
 				view,
@@ -574,6 +588,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("0a", { reviewId: "review-acme" })]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			expect(
 				await view.actions!["undoReview"]?.(ctxOf(ALICE), {
@@ -603,6 +618,7 @@ describe("the curator view", () => {
 					skill: "acme-skill",
 				}),
 			]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(
 				view,
@@ -630,6 +646,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("0c", { actor: "outside" })]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["openReview"]?.(
 				ctxOf(ALICE),
@@ -649,6 +666,7 @@ describe("the curator view", () => {
 				feedEntry("0b", { reviewId: "review-acme", action: "patch", skill: "acme-skill" }),
 				feedEntry("0a", { reviewId: "review-acme", action: "create", skill: "acme-skill" }),
 			]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const ctx = ctxOf(ALICE, { review: "review-acme" });
 			const rendered = await renderView(view, ctx);
@@ -681,6 +699,7 @@ describe("the curator view", () => {
 			scriptFeed(host, [
 				feedEntry("0a", { reviewId: "review-acme", action: "overlay", skill: "acme-skill" }),
 			]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["openChangeSkill"]?.(
 				ctxOf(ALICE, { review: "review-acme" }),
@@ -697,6 +716,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("0a", { reviewId: "review-other" })]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(
 				view,
@@ -731,6 +751,7 @@ describe("the curator view", () => {
 					apply: async (name, change) => feedEntry(name, { action: change.kind }),
 				}),
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const rendered = await renderView(
 				view,
@@ -769,6 +790,7 @@ describe("the curator view", () => {
 			});
 			host.setCuration({ undoReview: async () => 1 });
 
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "review-3" }),
@@ -825,6 +847,7 @@ describe("the curator view", () => {
 				}),
 				undoReview: async () => 1,
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "review-3" }),
@@ -847,6 +870,7 @@ describe("the curator view", () => {
 			scriptFeed(host, [
 				feedEntry("aa0001", { reviewId: "review-3", skill: "deploy-staging" }),
 			]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "review-3" }),
@@ -867,6 +891,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			scriptFeed(host, [feedEntry("aa0009", { skill: "vendor-notes" })]);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "review-aa0009" }),
@@ -910,6 +935,7 @@ describe("the curator view", () => {
 				reviewId: "review-acme",
 			});
 
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const action = view.actions?.["undoReview"];
 			expect(action).toBeDefined();
@@ -944,6 +970,7 @@ describe("the curator view", () => {
 					return 3;
 				},
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "digest-old" }),
@@ -986,6 +1013,7 @@ describe("the curator view", () => {
 					);
 				},
 			});
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "review-3" }),
@@ -1030,6 +1058,7 @@ describe("the curator view", () => {
 				throw new Error("notices seam unavailable");
 			};
 
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const result = await view.actions!["undoReview"](
 				ctxOf(ALICE, { review: "review-acme" }),
@@ -1050,6 +1079,7 @@ describe("the curator view", () => {
 	test("the pause switch writes the user's settings", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
 		try {
+			declareSettings(host);
 			const view = createCuratorView(host);
 
 			// Pause on: the header button's submit action toggles to true.
@@ -1069,6 +1099,7 @@ describe("the curator view", () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
 		try {
 			scriptFeed(host, []);
+			declareSettings(host);
 			const view = createCuratorView(host);
 			const anonymous = await renderView(view, ctxOf(undefined));
 			expect(anonymous.access).toBe("none");

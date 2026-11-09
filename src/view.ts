@@ -414,6 +414,9 @@ export function createCuratorView(host: SigrunHost): SurfaceDef<"view"> {
 						? payload.values.paused
 						: undefined) ??
 					(isObject(payload) ? payload.paused : undefined);
+				// The pause action still uses the raw store for its read-modify-
+				// write: the declared checked read strips unknown keys, while
+				// this write must preserve every other user setting verbatim.
 				const raw = await host.stores.user(who.user).settings.get();
 				const current = (await readSettings(host, who.user)).paused;
 				const paused =
