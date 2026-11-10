@@ -853,6 +853,14 @@ export async function createFakeHost(
 			throw new Error("fake host: declineInteraction is not implemented");
 		},
 
+		embeddings: {
+			async embed() {
+				return { ok: false, code: "no_model", message: "no embedding model is configured" };
+			},
+			async list() {
+				return [];
+			},
+		},
 		decisions: {
 			evaluate: async () => {
 				throw new Error("fake host: decisions.evaluate is not implemented");
