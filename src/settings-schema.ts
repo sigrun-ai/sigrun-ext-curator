@@ -8,10 +8,11 @@
 
 import { Type, type Static } from "typebox";
 
-const positiveInteger = (defaultValue: number, description: string) =>
+const positiveInteger = (defaultValue: number, title: string, description: string) =>
 	Type.Integer({
 		minimum: 1,
 		default: defaultValue,
+		title,
 		description,
 		"x-sigrun-apply": "live",
 	});
@@ -29,23 +30,27 @@ function asJsonSchema<T>(schema: T): T & Readonly<Record<string, unknown>> {
 export const CURATOR_USER_SCHEMA = asJsonSchema(Type.Object({
 	enabled: Type.Boolean({
 		default: true,
+		title: "Enabled",
 		"x-sigrun-apply": "live",
 		description: "Whether the curator runs for you at all.",
 	}),
 	paused: Type.Boolean({
 		default: false,
+		title: "Paused",
 		"x-sigrun-apply": "live",
 		description: "Pause the loops without disabling the view or /learn (a vacation switch).",
 	}),
 	idleModel: Type.Optional(
 		Type.String({
 			minLength: 1,
+			title: "Idle model",
 			"x-sigrun-apply": "live",
+			"x-sigrun-model": "chat",
 			description: "The model idle-pass digest runs use (absent: the server default).",
 		}),
 	),
-	threshold: positiveInteger(10, "Model calls between reviews."),
-	dailyRuns: positiveInteger(12, "Idle-pass digest runs per day."),
+	threshold: positiveInteger(10, "Review every N model calls", "Model calls between reviews."),
+	dailyRuns: positiveInteger(12, "Digest runs per day", "Idle-pass digest runs per day."),
 }));
 
 export type CuratorUserSettings = Static<typeof CURATOR_USER_SCHEMA>;

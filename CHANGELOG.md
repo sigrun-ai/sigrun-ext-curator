@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-11
+
+### Added
+
+- The idle-model setting declares the chat model kind, and every curator
+  setting now has a title for generated settings forms.
+
 ## [0.3.5] - 2026-11-08
 
 - CI: grant actions: read to the release workflow (the release-test skip lookup). No code change.

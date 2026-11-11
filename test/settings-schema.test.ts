@@ -15,6 +15,27 @@ import { readSettings } from "../src/settings.js";
 const ALICE = "alice";
 
 describe("curator user settings schema", () => {
+	test("idleModel declares the chat kind", () => {
+		expect(CURATOR_USER_SCHEMA.properties.idleModel).toMatchObject({
+			"x-sigrun-model": "chat",
+		});
+	});
+
+	test("every field has a title", () => {
+		expect(Object.fromEntries(
+			Object.entries(CURATOR_USER_SCHEMA.properties).map(([name, schema]) => [
+				name,
+				(schema as { title?: unknown }).title,
+			]),
+		)).toEqual({
+			enabled: "Enabled",
+			paused: "Paused",
+			idleModel: "Idle model",
+			threshold: "Review every N model calls",
+			dailyRuns: "Digest runs per day",
+		});
+	});
+
 	test("schema is drawable", () => {
 		assertDrawable(CURATOR_USER_SCHEMA);
 	});
