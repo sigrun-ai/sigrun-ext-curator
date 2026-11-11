@@ -820,6 +820,8 @@ export async function createFakeHost(
 				record("models.list");
 				return models;
 			},
+			// The fake serves no provider-local models.
+			isLocal: () => false,
 			complete: async () => {
 				throw new Error("fake host: models.complete is not implemented");
 			},
