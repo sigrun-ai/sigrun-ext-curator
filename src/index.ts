@@ -191,7 +191,7 @@ function undoReviewNoticeAction(host: SigrunHost): UserNoticeActionHandler {
 }
 
 export { declareSettings, readSettings } from "./settings.js";
-export { CURATOR_USER_SCHEMA } from "./settings-schema.js";
+export { CURATOR_SCHEMA } from "./settings-schema.js";
 export { notify, reviewNoticeKey } from "./notices.js";
 export type { CuratorSettings } from "./settings.js";
 export {

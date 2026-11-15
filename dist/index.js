@@ -167,7 +167,7 @@ function undoReviewNoticeAction(host) {
     };
 }
 export { declareSettings, readSettings } from "./settings.js";
-export { CURATOR_USER_SCHEMA } from "./settings-schema.js";
+export { CURATOR_SCHEMA } from "./settings-schema.js";
 export { notify, reviewNoticeKey } from "./notices.js";
 export { createLoop1, CURSORS_FILE, LOOP1_MAX_TOOL_CALLS, LOOP1_MAX_OUTPUT_TOKENS, LOOP1_DEADLINE_MS, } from "./loop1.js";
 export { enqueueLearn, learnReviewId } from "./learn.js";
