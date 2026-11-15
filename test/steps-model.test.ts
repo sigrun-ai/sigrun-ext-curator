@@ -979,6 +979,31 @@ describe("reviewDigest (the digests step)", () => {
 		}
 	});
 
+	test("an attachment-bearing sigrun.user turn is included in the digest", async () => {
+		const host = await createFakeHost({ users: [{ user: ALICE }] });
+		declareSettings(host);
+		try {
+			const id = await host.conversations.create({ owner: ALICE });
+			const inputs: string[] = [];
+			scriptDigestReads(host, inputs);
+			scriptAuthors(host, { 15: ALICE });
+			const view: ConversationViewWire = {
+				conversation: { id },
+				entries: [entry(15, "sigrun.user", "user", "acme attachment guidance")],
+				docs: {},
+				steer: { busy: false, queued: 0 },
+			};
+			await queueDigest(host, ALICE, id as ConversationId);
+
+			await runDigests(host, id, view);
+
+			expect(inputs).toHaveLength(1);
+			expect(inputs[0]).toContain("User (alice): acme attachment guidance");
+		} finally {
+			await host.close();
+		}
+	});
+
 	test("a hint stranded in both the queue entry and the refund file is consumed once", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }, { user: BOB }] });
 		declareSettings(host);

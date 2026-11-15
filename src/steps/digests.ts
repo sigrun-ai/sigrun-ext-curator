@@ -42,6 +42,7 @@
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { SigrunHost } from "@sigrun/sigrun/extension";
 import type { ConversationViewWire, ViewEntry } from "@sigrun/shared/views";
+import { BLOCKS_ANSWER_KIND, isUserInput } from "@sigrun/shared/turns";
 import {
 	clearPendingHints,
 	mergeHints,
@@ -57,13 +58,6 @@ import { digestRunWithBudget, stepLog, type ModelStepDeps } from "./run.js";
  *  the watched conversation's first frame (the real host delivers the
  *  snapshot before `watch` resolves; the grace only bounds an anomaly). */
 export const DIGEST_VIEW_GRACE_MS = 10_000;
-
-/** The entry kinds that carry a user turn (attribution.ts's set). */
-const USER_KINDS: ReadonlySet<string> = new Set([
-	"pi.user",
-	"sigrun.user.expanded",
-	"sigrun.blocks.answer",
-]);
 
 /** The loop-2 digest step: review every queued mixed conversation.
  *  Answers FALSE when the daily budget ran out (the pass stops). */
@@ -239,7 +233,7 @@ async function ownerDigest(
 	let sawOwnerTurn = false;
 	const hasPerEntry = Object.keys(byEntry).length > 0;
 	for (const entry of view.entries ?? []) {
-		if (USER_KINDS.has(entry.kind)) {
+		if (isUserInput(entry) || entry.kind === BLOCKS_ANSWER_KIND) {
 			const author = byEntry[String(entry.id)];
 			inOwnerRun = hasPerEntry ? author === user : everyTurnIsOwners;
 			if (!inOwnerRun) continue;

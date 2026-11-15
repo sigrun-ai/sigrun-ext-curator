@@ -38,6 +38,7 @@
  * entry's own hints merge with the conversation's refunded batch
  * (`pending-hints.json`), and completing the review drains both.
  */
+import { BLOCKS_ANSWER_KIND, isUserInput } from "@sigrun/shared/turns";
 import { clearPendingHints, mergeHints, pendingHintsFor, readDigestQueue, removeDigestEntry, } from "../queue.js";
 import { notify } from "../notices.js";
 import { reviewInstruction } from "../prompts.js";
@@ -46,12 +47,6 @@ import { digestRunWithBudget, stepLog } from "./run.js";
  *  the watched conversation's first frame (the real host delivers the
  *  snapshot before `watch` resolves; the grace only bounds an anomaly). */
 export const DIGEST_VIEW_GRACE_MS = 10_000;
-/** The entry kinds that carry a user turn (attribution.ts's set). */
-const USER_KINDS = new Set([
-    "pi.user",
-    "sigrun.user.expanded",
-    "sigrun.blocks.answer",
-]);
 /** The loop-2 digest step: review every queued mixed conversation.
  *  Answers FALSE when the daily budget ran out (the pass stops). */
 export async function digestsStep(deps) {
@@ -196,7 +191,7 @@ async function ownerDigest(deps, conversationId, view) {
     let sawOwnerTurn = false;
     const hasPerEntry = Object.keys(byEntry).length > 0;
     for (const entry of view.entries ?? []) {
-        if (USER_KINDS.has(entry.kind)) {
+        if (isUserInput(entry) || entry.kind === BLOCKS_ANSWER_KIND) {
             const author = byEntry[String(entry.id)];
             inOwnerRun = hasPerEntry ? author === user : everyTurnIsOwners;
             if (!inOwnerRun)
