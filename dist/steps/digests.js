@@ -38,7 +38,7 @@
  * entry's own hints merge with the conversation's refunded batch
  * (`pending-hints.json`), and completing the review drains both.
  */
-import { BLOCKS_ANSWER_KIND, isUserInput } from "@sigrun/shared/turns";
+import { BLOCKS_ANSWER_KIND, isUserInput, typedText } from "@sigrun/shared/turns";
 import { clearPendingHints, mergeHints, pendingHintsFor, readDigestQueue, removeDigestEntry, } from "../queue.js";
 import { notify } from "../notices.js";
 import { reviewInstruction } from "../prompts.js";
@@ -217,8 +217,11 @@ async function ownerDigest(deps, conversationId, view) {
     return [`Conversation digest (only ${user}'s turns and the replies to them):`, "", ...lines]
         .join("\n");
 }
-/** One entry's text for `role` (string content, or the text blocks). */
+/** One entry's text for `role`. User inputs use typed text so neither
+ *  expanded skills nor inline attachment bodies enter the digest. */
 function entryText(entry, role) {
+    if (role === "user" && isUserInput(entry))
+        return typedText(entry).trim();
     const parts = [];
     for (const message of entry.model ?? []) {
         if (message.role !== role)

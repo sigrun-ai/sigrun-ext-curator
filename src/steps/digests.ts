@@ -42,7 +42,7 @@
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { SigrunHost } from "@sigrun/sigrun/extension";
 import type { ConversationViewWire, ViewEntry } from "@sigrun/shared/views";
-import { BLOCKS_ANSWER_KIND, isUserInput } from "@sigrun/shared/turns";
+import { BLOCKS_ANSWER_KIND, isUserInput, typedText } from "@sigrun/shared/turns";
 import {
 	clearPendingHints,
 	mergeHints,
@@ -255,8 +255,10 @@ async function ownerDigest(
 		.join("\n");
 }
 
-/** One entry's text for `role` (string content, or the text blocks). */
+/** One entry's text for `role`. User inputs use typed text so neither
+ *  expanded skills nor inline attachment bodies enter the digest. */
 function entryText(entry: ViewEntry, role: string): string {
+	if (role === "user" && isUserInput(entry)) return typedText(entry).trim();
 	const parts: string[] = [];
 	for (const message of entry.model ?? []) {
 		if (message.role !== role) continue;

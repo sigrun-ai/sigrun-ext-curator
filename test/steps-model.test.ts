@@ -979,17 +979,37 @@ describe("reviewDigest (the digests step)", () => {
 		}
 	});
 
-	test("an attachment-bearing sigrun.user turn is included in the digest", async () => {
+	test("an attachment-bearing sigrun.user turn contributes typed text, never its body", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		declareSettings(host);
 		try {
 			const id = await host.conversations.create({ owner: ALICE });
 			const inputs: string[] = [];
 			scriptDigestReads(host, inputs);
-			scriptAuthors(host, { 15: ALICE });
+			scriptAuthors(host, { 15: ALICE, 16: ALICE });
 			const view: ConversationViewWire = {
 				conversation: { id },
-				entries: [entry(15, "sigrun.user", "user", "acme attachment guidance")],
+				entries: [
+					{
+						...entry(15, "sigrun.user", "user", "acme attachment guidance"),
+						model: [{ role: "user", content: [
+							{ type: "text", text: "acme attachment guidance" },
+							{ type: "text", text: "INLINE ATTACHMENT BODY: do not learn this" },
+						] }],
+						data: { attachments: [{
+							path: "/tmp/acme.txt",
+							name: "acme.txt",
+							mime: "text/plain",
+							bytes: 43,
+							delivery: "inline",
+							parts: [1],
+						}] },
+					},
+					{
+						...entry(16, "sigrun.user.expanded", "user", "expanded acme skill body"),
+						data: { typed: "use the acme skill" },
+					},
+				],
 				docs: {},
 				steer: { busy: false, queued: 0 },
 			};
@@ -999,6 +1019,9 @@ describe("reviewDigest (the digests step)", () => {
 
 			expect(inputs).toHaveLength(1);
 			expect(inputs[0]).toContain("User (alice): acme attachment guidance");
+			expect(inputs[0]).not.toContain("INLINE ATTACHMENT BODY");
+			expect(inputs[0]).toContain("User (alice): use the acme skill");
+			expect(inputs[0]).not.toContain("expanded acme skill body");
 		} finally {
 			await host.close();
 		}
