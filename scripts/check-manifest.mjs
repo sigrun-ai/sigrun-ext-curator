@@ -73,6 +73,13 @@ const HOST_MODULE_PINS = {
 	"@earendil-works/chord": "~1.5.0",
 	"@earendil-works/pi-codemode": "~1.5.0",
 	typebox: "1.3.27",
+	// The family peers (settings finish, 0.5.1): core's checked-settings
+	// contract (DeclaredSettings.effective) and shared's runtime value
+	// imports (accessOf). Floors/lines, not exact pins — core minor
+	// releases add lines the way the gateway's shared peer does.
+	"@sigrun/sigrun": ">=0.19.1",
+	"@sigrun/shared":
+		"0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0 || 0.14.0 || 0.15.0 || 0.16.0 || 0.19.1",
 };
 /** Development happens against pi-durable 1.5.0 (exact). */
 const DEV_PIN_OVERRIDES = {
@@ -94,8 +101,13 @@ for (const [module, spec] of Object.entries(peers)) {
 		`package.json: peerDependencies["${module}"] must be exactly "${pin}" (the 1.5.0-era peers are ranges) (got ${JSON.stringify(spec)})`,
 	);
 	const devPin = DEV_PIN_OVERRIDES[module] ?? pin;
+	const devExpected = module === "@sigrun/shared"
+		? "file:../sigrun/shared"
+		: module === "@sigrun/sigrun"
+			? "file:../sigrun"
+			: devPin;
 	check(
-		devDeps[module] === devPin,
+		devDeps[module] === devExpected,
 		`package.json: devDependencies["${module}"] must mirror the dev pin at exact "${devPin}" (got ${JSON.stringify(devDeps[module])})`,
 	);
 }

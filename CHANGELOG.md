@@ -1,3 +1,12 @@
+## [0.5.1] - 2026-11-15
+
+- The curator's settings become SYSTEM-wide with per-user overrides
+  (`x-sigrun-overridable` on every key): the My Settings page shows the
+  same five keys with a "Use system setting" checkbox; existing per-user
+  files keep working as overrides. `readSettings` resolves the declared
+  handle's `effective(user)`. Requires sigrun >=0.19.1 (the 0.19.0 tag
+  was cut against an uncommitted tree and never published).
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
