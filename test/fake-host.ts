@@ -40,6 +40,8 @@ import type {
 } from "@sigrun/shared/views";
 import type { DeclaredSettings, SettingsDeclaration } from "@sigrun/sigrun/extension";
 import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
+import { Errors } from "typebox/schema";
+import type { XSchema } from "typebox/schema";
 import type {
 	AccountLinkWire,
 	CurationFeedEntry,
@@ -428,8 +430,38 @@ export async function createFakeHost(
 							)) as U;
 						},
 					}),
-					effective: async () =>
-						(await read(decl.schema, { ...settingsValue })) as S,
+					// The 0.18.x contract: effective(user) resolves the SYSTEM
+					// read with the user's VALID overrides applied (core's
+					// applyOverrides validates each against its leaf schema —
+					// the fake mirrors that: invalid values are ignored, the
+					// system value stands).
+					effective: async (user: string) => {
+						const system = (await read(
+							decl.schema,
+							{ ...settingsValue },
+						)) as Record<string, unknown>;
+						const effective = { ...system };
+						const overrides = (settingsByUser.get(user) ?? {}) as Record<
+							string,
+							unknown
+						>;
+						for (const [key, override] of Object.entries(overrides)) {
+							const property = (
+								decl.schema as { properties?: Record<string, unknown> }
+							).properties?.[key];
+							// Errors(...)[0] is the VALID flag: true = the value
+							// checks clean against its leaf schema. A valid
+							// override applies; an invalid one is ignored (the
+							// system value stands).
+							if (
+								property !== undefined &&
+								Errors(property as XSchema, override)[0] === true
+							) {
+								effective[key] = override;
+							}
+						}
+						return effective as S;
+					},
 				};
 				declaredSettings = handle as unknown as FakeHost["declaredSettings"];
 				return handle;

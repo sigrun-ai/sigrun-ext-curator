@@ -10,27 +10,28 @@
  * during the factory, so `readSettings(host, user)` resolves the handle
  * the factory declared rather than re-declaring.
  */
-import { CURATOR_USER_SCHEMA } from "./settings-schema.js";
+import { CURATOR_SCHEMA } from "./settings-schema.js";
 const declaredByHost = new WeakMap();
 /**
- * Declare the curator's userSchema (call ONCE at the top of the
- * factory); the returned handle serves every later read on this host.
+ * Declare the curator's settings (call ONCE at the top of the factory);
+ * the returned handle serves every later read on this host. The schema
+ * is SYSTEM-wide, each key overridable: core derives the per-user
+ * override form and the `effective(user)` resolution from the marks.
  */
 export function declareSettings(host) {
     const declared = host.settings.declare({
-        // No shared settings (every key is per-user); core's checkSchema
-        // still requires the shared root to be an object.
-        schema: { type: "object", properties: {} },
-        userSchema: CURATOR_USER_SCHEMA,
+        schema: CURATOR_SCHEMA,
     });
     declaredByHost.set(host, declared);
     return declared;
 }
-/** Read one user's settings LIVE through the factory's declared handle. */
+/** Read one user's effective settings: system values with the user's overrides. */
 export async function readSettings(host, user) {
     const declared = declaredByHost.get(host);
     if (declared === undefined) {
         throw new Error("readSettings before the factory declared settings");
     }
-    return (await declared.user(user).get());
+    // The keys are SYSTEM-wide now: the user's file carries overrides, and
+    // core's effective(user) resolves them (the user wins where set+valid).
+    return (await declared.effective(user));
 }

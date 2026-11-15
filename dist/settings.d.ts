@@ -16,10 +16,12 @@ import type { CuratorUserSettings } from "./settings-schema.js";
 export type CuratorSettings = CuratorUserSettings;
 type Declared = ReturnType<SigrunHost["settings"]["declare"]>;
 /**
- * Declare the curator's userSchema (call ONCE at the top of the
- * factory); the returned handle serves every later read on this host.
+ * Declare the curator's settings (call ONCE at the top of the factory);
+ * the returned handle serves every later read on this host. The schema
+ * is SYSTEM-wide, each key overridable: core derives the per-user
+ * override form and the `effective(user)` resolution from the marks.
  */
 export declare function declareSettings(host: SigrunHost): Declared;
-/** Read one user's settings LIVE through the factory's declared handle. */
+/** Read one user's effective settings: system values with the user's overrides. */
 export declare function readSettings(host: SigrunHost, user: string): Promise<CuratorSettings>;
 export {};

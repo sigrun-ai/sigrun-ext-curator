@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "vitest";
 import { assertDrawable } from "@sigrun/sigrun/settings-schema";
-import { CURATOR_USER_SCHEMA } from "../src/settings-schema.js";
+import { CURATOR_SCHEMA } from "../src/settings-schema.js";
 import { createFakeHost } from "./fake-host.js";
 import createCurator from "../src/index.js";
 import { readSettings } from "../src/settings.js";
@@ -16,14 +16,14 @@ const ALICE = "alice";
 
 describe("curator user settings schema", () => {
 	test("idleModel declares the chat kind", () => {
-		expect(CURATOR_USER_SCHEMA.properties.idleModel).toMatchObject({
+		expect(CURATOR_SCHEMA.properties.idleModel).toMatchObject({
 			"x-sigrun-model": "chat",
 		});
 	});
 
 	test("every field has a title", () => {
 		expect(Object.fromEntries(
-			Object.entries(CURATOR_USER_SCHEMA.properties).map(([name, schema]) => [
+			Object.entries(CURATOR_SCHEMA.properties).map(([name, schema]) => [
 				name,
 				(schema as { title?: unknown }).title,
 			]),
@@ -37,7 +37,7 @@ describe("curator user settings schema", () => {
 	});
 
 	test("schema is drawable", () => {
-		assertDrawable(CURATOR_USER_SCHEMA);
+		assertDrawable(CURATOR_SCHEMA);
 	});
 
 	test("defaults match the old parser's defaults", async () => {
@@ -47,7 +47,7 @@ describe("curator user settings schema", () => {
 			const declared = host.declaredSettings!;
 			// An absent settings object reads as the old parser's defaults,
 			// one assertion per key (DEFAULT_CURATOR_SETTINGS).
-			const value = await declared.user(ALICE).get();
+			const value = await declared.effective(ALICE);
 			expect(value.enabled).toBe(true);
 			expect(value.paused).toBe(false);
 			expect(value.idleModel).toBeUndefined();
@@ -58,7 +58,7 @@ describe("curator user settings schema", () => {
 		}
 	});
 
-	test("an old settings file still loads", async () => {
+	test("an old per-user file keeps working as overrides", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			createCurator(host);
@@ -72,7 +72,7 @@ describe("curator user settings schema", () => {
 				dailyRuns: 2,
 				unrelated: "kept-but-ignored",
 			});
-			const value = await host.declaredSettings!.user(ALICE).get();
+			const value = await host.declaredSettings!.effective(ALICE);
 			expect(value).toMatchObject({
 				enabled: false,
 				paused: true,
@@ -88,10 +88,15 @@ describe("curator user settings schema", () => {
 				dailyRuns: "many",
 				paused: 0,
 			});
-			const repaired = await host.declaredSettings!.user(ALICE).get();
+			// Malformed overrides are IGNORED (never repaired): effective()
+			// is stateless per call — the system read + the user's VALID
+			// overrides. An invalid stored value never reaches the result,
+			// so the system defaults stand (the first read's applies do
+			// NOT persist — the fake mirrors core's applyOverrides).
+			const repaired = await host.declaredSettings!.effective(ALICE);
 			expect(repaired).toMatchObject({
-				enabled: true,
-				paused: false,
+				enabled: true, // the malformed "yes" is ignored — system default
+				paused: false, // the malformed 0 is ignored — system default
 				threshold: 10,
 				dailyRuns: 12,
 			});
@@ -112,13 +117,14 @@ describe("curator user settings schema", () => {
 		}
 	});
 
-	test("the factory declares a userSchema and no shared-schema reads throw nowhere", async () => {
+	test("the factory declares the system schema; effective resolves the overrides", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		try {
 			createCurator(host);
 			expect(host.declaredSettings).toBeDefined();
-			// The loops read through the declared handle, not the raw store.
-			const value = await host.declaredSettings!.user(ALICE).get();
+			// The loops read through the declared handle; effective(user)
+			// resolves the system read with the user's overrides.
+			const value = await host.declaredSettings!.effective(ALICE);
 			expect(value.threshold).toBe(10);
 		} finally {
 			await host.close();
