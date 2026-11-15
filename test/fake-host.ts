@@ -428,6 +428,8 @@ export async function createFakeHost(
 							)) as U;
 						},
 					}),
+					effective: async () =>
+						(await read(decl.schema, { ...settingsValue })) as S,
 				};
 				declaredSettings = handle as unknown as FakeHost["declaredSettings"];
 				return handle;
@@ -600,6 +602,14 @@ export async function createFakeHost(
 					);
 					if (index !== -1) watchList.splice(index, 1);
 				};
+			},
+			setAutoName: async (id, title) => {
+				record("conversations.setAutoName", id, title);
+				return { applied: false };
+			},
+			markContext: async (id, mark) => {
+				record("conversations.markContext", id, mark);
+				return { entryId: mark.at };
 			},
 			list: async (opts) => {
 				record("conversations.list", opts);
