@@ -1,3 +1,12 @@
+## [0.6.0] - 2026-11-15
+
+- Recognise `sigrun.user` input entries (attachments recorded on the
+  entry): digests classify them as user turns via the shared
+  `isUserInput` helper, and a user turn contributes its typed text —
+  not inline attachment bodies — to the review input.
+- Peer floors: `@sigrun/shared` gains 0.20.0, `@sigrun/sigrun`
+  >= 0.20.0 (companion to sigrun-core 0.20.0).
+
 ## [0.5.1] - 2026-11-15
 
 - The curator's settings become SYSTEM-wide with per-user overrides
