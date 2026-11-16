@@ -1,3 +1,8 @@
+## [0.6.1] - 2026-11-15
+
+- The @sigrun/shared peer gains the 0.20.1 line (companion to
+  sigrun-core 0.20.1, the re-cut of 0.20.0). No runtime change.
+
 ## [0.6.0] - 2026-11-15
 
 - Recognise `sigrun.user` input entries (attachments recorded on the

@@ -79,7 +79,7 @@ const HOST_MODULE_PINS = {
 	// releases add lines the way the gateway's shared peer does.
 	"@sigrun/sigrun": ">=0.20.0",
 	"@sigrun/shared":
-		"0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0 || 0.14.0 || 0.15.0 || 0.16.0 || 0.19.1 || 0.20.0",
+		"0.5.0 || 0.6.0 || 0.6.1 || 0.7.0 || 0.8.0 || 0.9.0 || 0.10.0 || 0.10.1 || 0.11.0 || 0.12.0 || 0.13.0 || 0.14.0 || 0.15.0 || 0.16.0 || 0.19.1 || 0.20.0 || 0.20.1",
 };
 /** Development happens against pi-durable 1.5.0 (exact). */
 const DEV_PIN_OVERRIDES = {
