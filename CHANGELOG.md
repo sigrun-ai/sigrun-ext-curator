@@ -1,3 +1,8 @@
+## [0.6.2] - 2026-11-15
+
+- The @sigrun/shared peer gains the 0.20.2 line (companion to
+  sigrun-core 0.20.2, second re-cut of 0.20.0). No runtime change.
+
 ## [0.6.1] - 2026-11-15
 
 - The @sigrun/shared peer gains the 0.20.1 line (companion to
