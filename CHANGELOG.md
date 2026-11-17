@@ -1,3 +1,11 @@
+## [Unreleased]
+
+### Fixed
+
+- Loop 2 drops queued digests with no owner-authored turns and clears their
+  hints. Cron/job inputs have no human author, so retrying them could never
+  produce a digest. Recurring jobs are re-queued normally after each run.
+
 ## [0.6.2] - 2026-11-15
 
 - The @sigrun/shared peer gains the 0.20.2 line (companion to

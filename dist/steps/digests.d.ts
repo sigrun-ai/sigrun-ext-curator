@@ -16,7 +16,10 @@
  * EVERY user turn to the owner (that is what `ownerOnly` means). A
  * mixed conversation whose map has no entry for the digesting user has
  * no attributable turn — none is included, the fail-closed skip below
- * leaves it queued.
+ * drops it and drains its hints (job-run inputs have no human author, so
+ * retries can never make them digestible). Loop 1 re-queues a recurring
+ * cron conversation after each run; one skip line per run is the normal
+ * steady state, not a stuck queue.
  *
  * ✅ HOST GAP RESOLVED (2026-11-01): this step originally read per-entry
  * authors from a `sigrun.authors` doc projected onto the watched view

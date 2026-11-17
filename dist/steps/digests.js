@@ -16,7 +16,10 @@
  * EVERY user turn to the owner (that is what `ownerOnly` means). A
  * mixed conversation whose map has no entry for the digesting user has
  * no attributable turn — none is included, the fail-closed skip below
- * leaves it queued.
+ * drops it and drains its hints (job-run inputs have no human author, so
+ * retries can never make them digestible). Loop 1 re-queues a recurring
+ * cron conversation after each run; one skip line per run is the normal
+ * steady state, not a stuck queue.
  *
  * ✅ HOST GAP RESOLVED (2026-11-01): this step originally read per-entry
  * authors from a `sigrun.authors` doc projected onto the watched view
@@ -81,14 +84,20 @@ export async function reviewDigest(deps, conversationId) {
         return true; // unreadable: leave it queued, move on
     }
     const digest = await ownerDigest(deps, conversationId, view);
-    if (digest === undefined) {
-        log(`loop 2: ${user} digest of conversation ${String(conversationId)} has no attributable turns`);
-        return true; // fail closed: leave it queued for a per-entry source
-    }
     // The B2 carry: the entry owns its hints; the refund file may hold
     // the same ids (a crash between queueDigest and the clear) — merge
     // by hint id so a stranded hint is consumed exactly once.
     const hints = mergeHints(await pendingHintsFor(host, user, conversationId), (await readDigestQueue(host, user)).find((entry) => entry.id === conversationId)?.hints ?? []);
+    if (digest === undefined) {
+        // No human turn can be learned from. This is terminal for this
+        // queue entry, not retryable: job runs have no human author. Loop 1
+        // will re-queue a recurring cron conversation after each new run,
+        // so one skip per run/day is steady state, not a new stuck queue.
+        await removeDigestEntry(host, user, conversationId);
+        await clearPendingHints(host, user, conversationId, hints);
+        log(`loop 2: ${user} digest of conversation ${String(conversationId)} skipped (no owner-authored turns)`);
+        return true;
+    }
     const targets = await host.curation.targets(user, conversationId);
     const selection = await host.curation.tools(conversationId);
     const allow = [
@@ -164,7 +173,7 @@ async function watchFirstFrame(deps, conversationId) {
     return frame;
 }
 /** The owner's digest of one view, or undefined when no user turn is
- *  attributable (the fail-closed skip). */
+ *  attributable (the fail-closed drop). */
 async function ownerDigest(deps, conversationId, view) {
     const { host, user } = deps;
     // Per-entry attribution, the PRIMARY source: entry id → author,

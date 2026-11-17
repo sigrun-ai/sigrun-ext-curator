@@ -21,8 +21,17 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import { describe, expect, test, vi } from "vitest";
+import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
+import type { ConversationViewWire } from "@sigrun/shared/views";
+import { LOOP2_TICK_DEADLINE_MS } from "../src/loop2.js";
+import {
+	pendingHintsFor,
+	queueDigest,
+	readDigestQueue,
+	refundHints,
+} from "../src/queue.js";
+import { digestsStep } from "../src/steps/digests.js";
 import { createFakeHost } from "./fake-host.js";
 import { declareSettings } from "../src/settings.js";
 import type { FakeHost } from "./fake-host.js";
@@ -31,7 +40,6 @@ import {
 	tick,
 	FIRST_TICK_FILE,
 	IDLE_THRESHOLD_MS,
-	LOOP2_TICK_DEADLINE_MS,
 	PASS_FILE,
 	PASS_STEPS,
 } from "../src/loop2.js";
@@ -231,6 +239,122 @@ describe("loop 2: the tick", () => {
 			await tick(host, c.now);
 			const done = (await readPass(host, BOB)) as { done: number };
 			expect(done.done).toBe(PASS_STEPS.length);
+		} finally {
+			await host.close();
+		}
+	});
+});
+
+describe("loop 2: digests without owner-authored turns", () => {
+	/** One cron-shaped view: no input is attributed to a human owner. */
+	function cronView(id: ConversationId): ConversationViewWire {
+		return {
+			conversation: { id },
+			entries: [
+				{
+					id: 20 as EntryId,
+					kind: "pi.user",
+					model: [{ role: "user", content: "run the daily maintenance" }],
+				},
+			],
+			docs: {},
+			steer: { busy: false, queued: 0 },
+		};
+	}
+
+	/** Run one public digest step over the queued conversation and its view. */
+	async function runDigests(
+		host: FakeHost,
+		id: ConversationId,
+		view: ConversationViewWire,
+		logs: string[],
+	): Promise<void> {
+		const work = digestsStep({
+			host,
+			user: ALICE,
+			now: () => new Date(T0),
+			deadlineAt: T0 + LOOP2_TICK_DEADLINE_MS,
+			budget: { left: () => 1, spend: async () => true },
+			log: (message) => {
+				logs.push(message);
+			},
+		});
+		await vi.waitFor(() => {
+			expect(
+				host.calls.some((call) => call.method === "conversations.watch"),
+			).toBe(true);
+		});
+		host.pushView(id, view);
+		expect(await work).toBe(true);
+	}
+
+	/** A non-digestible cron conversation also spends no model run. */
+	async function setupUnattributedDigest(host: FakeHost): Promise<ConversationId> {
+		const id = await seedConversation(host, ALICE);
+		host.setCuration({
+			eligibility: async () => ({
+				owner: ALICE,
+				deleted: false,
+				internal: false,
+				ownerOnly: false,
+				unattributed: 1,
+			}),
+			digestRun: async () => {
+				throw new Error("an unattributed conversation must not run a digest model");
+			},
+		});
+		return id;
+	}
+
+	test("a digest with no owner-authored turns is dropped from the queue", async () => {
+		const host = await setup([ALICE]);
+		try {
+			const id = await setupUnattributedDigest(host);
+			await queueDigest(host, ALICE, id);
+			const logs: string[] = [];
+
+			await runDigests(host, id, cronView(id), logs);
+
+			expect(await readDigestQueue(host, ALICE)).toEqual([]);
+			expect(logs).toEqual([
+				`loop 2: ${ALICE} digest of conversation ${id} skipped (no owner-authored turns)`,
+			]);
+			expect(
+				host.calls.filter((call) => call.method === "curation.digestRun"),
+			).toEqual([]);
+
+			// A later owner-attributed run queues normally; the drop is not a tombstone.
+			await queueDigest(host, ALICE, id);
+			expect(await readDigestQueue(host, ALICE)).toEqual([{ id, hints: [] }]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("dropping an unattributed digest clears its refunded and queued hints", async () => {
+		const host = await setup([ALICE]);
+		try {
+			const id = await setupUnattributedDigest(host);
+			const queuedHint = {
+				id: "acme-queued",
+				tool: "skill_manage",
+				args: { action: "remember", skill: "acme/cron" },
+				at: new Date(T0).toISOString(),
+			};
+			const refundedHint = {
+				id: "acme-refunded",
+				tool: "memory_write",
+				args: { file: "user" },
+				at: new Date(T0).toISOString(),
+			};
+			await queueDigest(host, ALICE, id, [queuedHint]);
+			await refundHints(host, ALICE, id, [refundedHint]);
+			expect(await pendingHintsFor(host, ALICE, id)).toEqual([refundedHint]);
+
+			await runDigests(host, id, cronView(id), []);
+
+			expect(await pendingHintsFor(host, ALICE, id)).toEqual([]);
+			expect(await readDigestQueue(host, ALICE)).toEqual([]);
 		} finally {
 			await host.close();
 		}

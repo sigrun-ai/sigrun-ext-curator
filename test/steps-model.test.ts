@@ -979,7 +979,7 @@ describe("reviewDigest (the digests step)", () => {
 		}
 	});
 
-	test("an attachment-bearing sigrun.user turn contributes typed text, never its body", async () => {
+	test("the digest carries a user turn's typed text, not its attachment bodies", async () => {
 		const host = await createFakeHost({ users: [{ user: ALICE }] });
 		declareSettings(host);
 		try {
@@ -993,8 +993,8 @@ describe("reviewDigest (the digests step)", () => {
 					{
 						...entry(15, "sigrun.user", "user", "acme attachment guidance"),
 						model: [{ role: "user", content: [
-							{ type: "text", text: "acme attachment guidance" },
-							{ type: "text", text: "INLINE ATTACHMENT BODY: do not learn this" },
+							{ type: "text", text: "compare these" },
+							{ type: "text", text: "INLINE ATTACHMENT BODY-SENTINEL" },
 						] }],
 						data: { attachments: [{
 							path: "/tmp/acme.txt",
@@ -1018,8 +1018,8 @@ describe("reviewDigest (the digests step)", () => {
 			await runDigests(host, id, view);
 
 			expect(inputs).toHaveLength(1);
-			expect(inputs[0]).toContain("User (alice): acme attachment guidance");
-			expect(inputs[0]).not.toContain("INLINE ATTACHMENT BODY");
+			expect(inputs[0]).toContain("User (alice): compare these");
+			expect(inputs[0]).not.toContain("BODY-SENTINEL");
 			expect(inputs[0]).toContain("User (alice): use the acme skill");
 			expect(inputs[0]).not.toContain("expanded acme skill body");
 		} finally {
