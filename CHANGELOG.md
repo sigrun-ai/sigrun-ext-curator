@@ -1,3 +1,19 @@
+## [Unreleased]
+
+### Fixed
+
+- Loop 2 drops queued digests with no owner-authored turns and clears their
+  hints. Cron/job inputs have no human author, so retrying them could never
+  produce a digest. Recurring jobs are re-queued normally after each run.
+
+### Changed
+
+- The `@sigrun/shared` peer becomes an open floor (`>=0.20.0`) instead of a
+  version-line chain (decisions C5); 0.20.0 is the first published line
+  carrying `typedText`/`entryAttachments`/`isUserInput`, `accessOf`, and the
+  blocks/notices/views surface this extension imports. `check-manifest`
+  enforces the same floor. No runtime change.
+
 ## [0.6.2] - 2026-11-15
 
 - The @sigrun/shared peer gains the 0.20.2 line (companion to
