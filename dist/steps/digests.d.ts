@@ -35,11 +35,15 @@
  * follows another user's turn answers that turn, and is excluded with
  * it).
  *
- * Durability: the queue file is read WITHOUT clearing; an entry is
- * removed only after its review COMPLETED (a failed run leaves it for
- * the next pass). The B2 carry: consumption dedups hints by id — the
- * entry's own hints merge with the conversation's refunded batch
- * (`pending-hints.json`), and completing the review drains both.
+ * Durability: the queue file is read WITHOUT clearing. An entry is
+ * removed when its review COMPLETED (a failed run leaves it for the next
+ * pass) or when the conversation has no owner-authored turn (the
+ * fail-closed drop above — terminal, its hints drain with it). A view
+ * that shows no turns at all (an empty first frame) proves nothing about
+ * authorship, so the entry stays queued with its hints. The B2 carry:
+ * consumption dedups hints by id — the entry's own hints merge with the
+ * conversation's refunded batch (`pending-hints.json`), and completing
+ * the review drains both.
  */
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { type ModelStepDeps } from "./run.js";

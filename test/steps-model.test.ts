@@ -1049,16 +1049,22 @@ describe("reviewDigest (the digests step)", () => {
 				args: { file: "user" },
 				at: NOW.toISOString(),
 			};
-			await queueDigest(host, ALICE, id as ConversationId, [hint]);
-			await refundHints(host, ALICE, id as ConversationId, [hint]);
+			// Plus one hint ONLY in the queue entry and one ONLY in the refund
+			// file: a refunded-only or queued-only read would drop one of them.
+			const queuedOnly = { id: "hint-q", tool: "acme_queued_only", args: {}, at: NOW.toISOString() };
+			const refundedOnly = { id: "hint-r", tool: "acme_refunded_only", args: {}, at: NOW.toISOString() };
+			await queueDigest(host, ALICE, id as ConversationId, [hint, queuedOnly]);
+			await refundHints(host, ALICE, id as ConversationId, [hint, refundedOnly]);
 
 			await runDigests(host, id, view);
 
-			// The hint appears exactly once in the run's input (dedup by
-			// hint id at consumption — the instruction prints each hint
-			// once, so its tool name appears once)...
+			// Every hint appears exactly once in the run's input (merged by
+			// hint id at consumption — the instruction prints each hint once,
+			// so each tool name appears once)...
 			expect(inputs).toHaveLength(1);
-			expect(inputs[0].split("memory_write").length - 1).toBe(1);
+			for (const tool of ["memory_write", "acme_queued_only", "acme_refunded_only"]) {
+				expect(inputs[0].split(tool).length - 1, tool).toBe(1);
+			}
 			// ...and both durable places are drained after the review.
 			const queue = (await readState(host, "digest-queue.json")) as {
 				conversations: unknown[];

@@ -35,13 +35,17 @@
  * follows another user's turn answers that turn, and is excluded with
  * it).
  *
- * Durability: the queue file is read WITHOUT clearing; an entry is
- * removed only after its review COMPLETED (a failed run leaves it for
- * the next pass). The B2 carry: consumption dedups hints by id — the
- * entry's own hints merge with the conversation's refunded batch
- * (`pending-hints.json`), and completing the review drains both.
+ * Durability: the queue file is read WITHOUT clearing. An entry is
+ * removed when its review COMPLETED (a failed run leaves it for the next
+ * pass) or when the conversation has no owner-authored turn (the
+ * fail-closed drop above — terminal, its hints drain with it). A view
+ * that shows no turns at all (an empty first frame) proves nothing about
+ * authorship, so the entry stays queued with its hints. The B2 carry:
+ * consumption dedups hints by id — the entry's own hints merge with the
+ * conversation's refunded batch (`pending-hints.json`), and completing
+ * the review drains both.
  */
-import { BLOCKS_ANSWER_KIND, isUserInput, typedText } from "@sigrun/shared/turns";
+import { BLOCKS_ANSWER_KIND, entryAttachments, isUserInput, typedText } from "@sigrun/shared/turns";
 import { clearPendingHints, mergeHints, pendingHintsFor, readDigestQueue, removeDigestEntry, } from "../queue.js";
 import { notify } from "../notices.js";
 import { reviewInstruction } from "../prompts.js";
@@ -82,6 +86,12 @@ export async function reviewDigest(deps, conversationId) {
     if (view === undefined) {
         log(`loop 2: ${user} digest of conversation ${String(conversationId)} saw no view`);
         return true; // unreadable: leave it queued, move on
+    }
+    if ((view.entries ?? []).length === 0) {
+        // No turns read at all: authorship is unknown, not absent. Leave
+        // the entry (and its hints) queued for the next pass.
+        log(`loop 2: ${user} digest of conversation ${String(conversationId)} read no turns; left queued`);
+        return true;
     }
     const digest = await ownerDigest(deps, conversationId, view);
     // The B2 carry: the entry owns its hints; the refund file may hold
@@ -205,11 +215,16 @@ async function ownerDigest(deps, conversationId, view) {
             inOwnerRun = hasPerEntry ? author === user : everyTurnIsOwners;
             if (!inOwnerRun)
                 continue;
-            const text = entryText(entry, "user");
-            if (text === "")
-                continue;
-            lines.push(`User (${user}): ${text}`);
+            // An owner-attributed turn is the owner's even without typed
+            // text (attachments only): it keeps the digest (and the hints
+            // queued with it) instead of falling into the no-owner drop.
             sawOwnerTurn = true;
+            const text = entryText(entry, "user");
+            const names = entryAttachments(entry).map((attachment) => attachment.name);
+            if (text !== "")
+                lines.push(`User (${user}): ${text}`);
+            else if (names.length > 0)
+                lines.push(`User (${user}): [attached: ${names.join(", ")}]`);
             continue;
         }
         if (entry.kind === "pi.assistant") {

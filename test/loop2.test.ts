@@ -359,4 +359,78 @@ describe("loop 2: digests without owner-authored turns", () => {
 			await host.close();
 		}
 	});
+
+	const HINT = {
+		id: "acme-hint",
+		tool: "memory_write",
+		args: { file: "user" },
+		at: new Date(T0).toISOString(),
+	};
+
+	test("an empty first frame leaves the digest queued with its hints (no turns read is not no owner turns)", async () => {
+		const host = await setup([ALICE]);
+		try {
+			const id = await setupUnattributedDigest(host);
+			await queueDigest(host, ALICE, id, [HINT]);
+			const logs: string[] = [];
+			const empty: ConversationViewWire = {
+				conversation: { id },
+				entries: [],
+				docs: {},
+				steer: { busy: false, queued: 0 },
+			};
+
+			await runDigests(host, id, empty, logs);
+
+			expect(await readDigestQueue(host, ALICE)).toEqual([{ id, hints: [HINT] }]);
+			expect(logs).toEqual([
+				`loop 2: ${ALICE} digest of conversation ${id} read no turns; left queued`,
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("an owner turn with attachments but no typed text is still reviewed (its hints are not dropped)", async () => {
+		const host = await setup([ALICE]);
+		try {
+			const id = await seedConversation(host, ALICE);
+			const inputs: string[] = [];
+			host.setCuration({
+				targets: async () => [],
+				authors: async () => new Map([[20 as EntryId, ALICE]]),
+				digestRun: async (_user, opts) => {
+					inputs.push(String((opts as { input: string }).input));
+					return { status: "completed", text: "saved", changes: [] };
+				},
+			});
+			await queueDigest(host, ALICE, id, [HINT]);
+			const view: ConversationViewWire = {
+				conversation: { id },
+				entries: [
+					{
+						id: 20 as EntryId,
+						kind: "sigrun.user",
+						data: {
+							attachments: [
+								{ path: "uploads/1/acme.png", name: "acme.png", mime: "image/png", bytes: 10, delivery: "image", parts: [0] },
+							],
+						},
+						model: [{ role: "user", content: [{ type: "image", data: "", mimeType: "image/png" }] }],
+					},
+				],
+				docs: {},
+				steer: { busy: false, queued: 0 },
+			} as never;
+
+			await runDigests(host, id, view, []);
+
+			expect(inputs).toHaveLength(1);
+			expect(inputs[0]).toContain(`User (${ALICE}): [attached: acme.png]`);
+			expect(inputs[0]).toContain("memory_write");
+			expect(await readDigestQueue(host, ALICE)).toEqual([]);
+		} finally {
+			await host.close();
+		}
+	});
 });

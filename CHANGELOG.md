@@ -1,3 +1,14 @@
+## [Unreleased]
+
+### Fixed
+
+- A digest whose watched view showed no turns at all (an empty first
+  frame) was dropped as "no owner-authored turns", discarding its queued
+  hints; it now stays queued for the next pass.
+- An owner turn carrying only attachments (no typed text) no longer reads
+  as "no owner-authored turns": the digest names the attachments and the
+  review runs, so the hints queued with it are not dropped.
+
 ## [0.6.3] - 2026-11-17
 
 ### Fixed
