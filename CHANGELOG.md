@@ -1,3 +1,15 @@
+## [0.7.0] - 2026-11-24
+
+### Changed
+
+- pi-durable 1.6.0 (and the chord 1.6.0 it pulls in). chord moved `Context`,
+  `Draft`, `JsonValue` and `copyJson` off its root into
+  `@earendil-works/chord/context`, `/delta` and `/json`, so imports point
+  there; a tool's `execute()` may now return a `ToolPark` instead of a
+  result, so callers that annotate or read a result handle the union.
+  The declared `@earendil-works/*` peers are raised to `~1.6.0`, which is
+  what makes this release installable under a 1.6.0 host.
+
 ## [0.6.4] - 2026-11-19
 
 ### Fixed
